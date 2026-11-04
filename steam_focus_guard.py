@@ -332,7 +332,7 @@ class SteamFocusGuard:
 
     def _build_ui(self) -> None:
         tk = self.tk
-        self.outer = tk.Frame(self.root, bg="#151820", padx=28, pady=24)
+        self.outer = tk.Frame(self.root, bg="#151820", padx=28, pady=18)
         self.outer.pack(fill="both", expand=True)
 
         self.heading_label = tk.Label(
@@ -360,7 +360,7 @@ class SteamFocusGuard:
         self.plan_heading.pack(anchor="w", pady=(0, 8))
 
         self.plan_box = tk.Text(
-            self.outer, height=11, wrap="word", bg="#202632", fg="#e0e6ef",
+            self.outer, height=6, wrap="word", bg="#202632", fg="#e0e6ef",
             insertbackground="#e0e6ef", relief="flat", borderwidth=0,
             font=("Segoe UI", 11), padx=14, pady=12, spacing1=3, spacing3=7
         )
@@ -368,16 +368,16 @@ class SteamFocusGuard:
         self.plan_box.configure(state="disabled")
 
         self.action_frame = tk.Frame(self.outer, bg="#151820")
-        self.action_frame.pack(fill="x", pady=(20, 0))
+        self.action_frame.pack(fill="x", pady=(12, 0))
 
         self.primary_button = self._make_button(self.action_frame, "study_button", self.mark_study_started, primary=True)
-        self.primary_button.pack(fill="x", pady=4)
+        self.primary_button.pack(fill="x", pady=2)
         self.check_button = self._make_button(self.action_frame, "check_button", self.check_study_time)
-        self.check_button.pack(fill="x", pady=4)
+        self.check_button.pack(fill="x", pady=2)
         self.temporary_button = self._make_button(self.action_frame, "temporary_button", self.show_temporary_options)
-        self.temporary_button.pack(fill="x", pady=4)
+        self.temporary_button.pack(fill="x", pady=2)
         self.done_button = self._make_button(self.action_frame, "all_done_button", self.grant_all_done)
-        self.done_button.pack(fill="x", pady=4)
+        self.done_button.pack(fill="x", pady=2)
 
         self.temp_frame = tk.Frame(self.outer, bg="#151820")
         self.temp_heading = tk.Label(
@@ -396,7 +396,7 @@ class SteamFocusGuard:
             self.outer, text=self.t("footer_hint"), bg="#151820", fg="#788397",
             font=("Segoe UI", 9), wraplength=570, justify="left"
         )
-        self.footer_label.pack(anchor="w", pady=(16, 0))
+        self.footer_label.pack(anchor="w", pady=(10, 0))
 
     def _make_button(self, parent: Any, key: str, command: Any, primary: bool = False) -> Any:
         tk = self.tk
