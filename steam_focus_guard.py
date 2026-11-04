@@ -475,7 +475,7 @@ class SteamFocusGuard:
         self.temp_frame.pack_forget()
         self.plan_heading.pack(before=self.footer_label, anchor="w", pady=(0, 8))
         self.plan_box.pack(before=self.footer_label, fill="both", expand=True)
-        self.action_frame.pack(before=self.footer_label, fill="x", pady=(20, 0))
+        self.action_frame.pack(before=self.footer_label, fill="x", pady=(12, 0))
         self.temp_view_visible = False
         self._refresh_ui()
 
