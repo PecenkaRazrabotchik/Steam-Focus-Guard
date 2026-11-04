@@ -53,7 +53,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "always_on_top": True,
     },
     "rules": {
-        "minimum_study_minutes_for_all_done": 0
+        "required_study_minutes": 90
     },
     "ui": {
         "window_title": "Фокус: сначала дела, потом Steam",
@@ -62,6 +62,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "date_line": "Сегодня: {date} · {weekday}",
         "empty_schedule": "На сегодня задания не заданы. Добавь их в config.json.",
         "study_button": "Сначала выполню задания",
+        "check_button": "Проверить",
+        "check_no_session_title": "Учебная сессия не начата",
+        "check_no_session_message": "Сначала нажми «Сначала выполню задания». Норма на сегодня: {required}.",
+        "check_remaining_title": "Нужно ещё позаниматься",
+        "check_remaining_message": "Прошло: {elapsed}. До нормы {required} осталось: {remaining}.",
+        "check_complete_title": "Учебная норма выполнена",
+        "check_complete_message": "Засчитано учебного времени: {elapsed}. Дневная норма {required} выполнена. Полный доступ к Steam открыт.",
         "temporary_button": "Временно поиграть",
         "all_done_button": "Всё сделано — открыть Steam",
         "temporary_heading": "На сколько открыть Steam?",
@@ -97,6 +104,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "schedule": {
         "monday": {
+            "required_study_minutes": 90,
             "tasks": [
                 "Главное: университетские задания — 45 минут",
                 "Дополнительно, если есть силы: базы данных и SQL — 30 минут",
@@ -104,6 +112,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             ]
         },
         "tuesday": {
+            "required_study_minutes": 90,
             "tasks": [
                 "Главное: Python — написать код или решить задачи, 45 минут",
                 "Дополнительно: ААС или другое задание университета — 30 минут",
@@ -111,6 +120,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             ]
         },
         "wednesday": {
+            "required_study_minutes": 90,
             "tasks": [
                 "Главное: SQL — написать и проверить запросы, 45 минут",
                 "Дополнительно: Python — повторить пройденное, 30 минут",
@@ -118,6 +128,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             ]
         },
         "thursday": {
+            "required_study_minutes": 90,
             "tasks": [
                 "Главное: университетские задания и подготовка — 45 минут",
                 "Дополнительно: Python — практика, 30 минут",
@@ -125,6 +136,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             ]
         },
         "friday": {
+            "required_study_minutes": 90,
             "tasks": [
                 "Главное: закрыть срочные задания и проверить дедлайны — 45 минут",
                 "Дополнительно: повторить SQL или Python по слабым местам — 30 минут",
@@ -132,12 +144,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             ]
         },
         "saturday": {
+            "required_study_minutes": 60,
             "tasks": [
                 "Гибкий день: выбрать одно самое важное или накопившееся задание — 45–60 минут",
                 "По желанию: английский или повторение материала — 10–15 минут"
             ]
         },
         "sunday": {
+            "required_study_minutes": 0,
             "tasks": [
                 "Отдых и восстановление",
                 "По желанию: составить план на следующую неделю — 10–15 минут"
@@ -358,6 +372,8 @@ class SteamFocusGuard:
 
         self.primary_button = self._make_button(self.action_frame, "study_button", self.mark_study_started, primary=True)
         self.primary_button.pack(fill="x", pady=4)
+        self.check_button = self._make_button(self.action_frame, "check_button", self.check_study_time)
+        self.check_button.pack(fill="x", pady=4)
         self.temporary_button = self._make_button(self.action_frame, "temporary_button", self.show_temporary_options)
         self.temporary_button.pack(fill="x", pady=4)
         self.done_button = self._make_button(self.action_frame, "all_done_button", self.grant_all_done)
@@ -493,34 +509,105 @@ class SteamFocusGuard:
         self._refresh_ui(self.t("study_started_message"))
         self.root.iconify()
 
-    def _check_minimum_study_time(self) -> bool:
-        required = max(0, int(self.config.get("rules", {}).get("minimum_study_minutes_for_all_done", 0)))
-        if required <= 0:
-            return True
-        started_today = False
-        if self.study_started_at:
-            try:
-                started_today = datetime.fromtimestamp(float(self.study_started_at)).date() == datetime.now().date()
-            except (TypeError, ValueError, OSError):
-                started_today = False
-        if not started_today:
-            elapsed = 0
-        else:
-            elapsed = max(0, int((time.time() - float(self.study_started_at)) / 60))
-        if elapsed >= required:
-            return True
-        self.messagebox.showwarning(
-            self.t("minimum_time_title"),
-            self.t("minimum_time_message", elapsed=elapsed, required=required),
+    def _required_study_minutes_for_today(self) -> int:
+        """Return today's requirement, using a day override or the global config value."""
+        schedule = self.config.get("schedule", {})
+        date_key = datetime.now().date().isoformat()
+        special = schedule.get("special_dates", {}).get(date_key)
+        day_key = DAY_KEYS[datetime.now().weekday()]
+        day_data = special if isinstance(special, dict) else schedule.get(day_key, {})
+        if not isinstance(day_data, dict):
+            day_data = {}
+
+        rules = self.config.get("rules", {})
+        configured_value = day_data.get("required_study_minutes")
+        if configured_value is None:
+            # Keep compatibility with older configs that used this setting name.
+            configured_value = rules.get(
+                "required_study_minutes",
+                rules.get("minimum_study_minutes_for_all_done", 90),
+            )
+        try:
+            return max(0, int(configured_value))
+        except (TypeError, ValueError):
+            return 90
+
+    def _study_elapsed_seconds(self) -> int | None:
+        """Return elapsed wall-clock time since today's study start, or None if not started."""
+        if not self.study_started_at:
+            return None
+        try:
+            started_at = float(self.study_started_at)
+            if datetime.fromtimestamp(started_at).date() != datetime.now().date():
+                return None
+            return max(0, int(time.time() - started_at))
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        total_minutes = max(0, (int(seconds) + 59) // 60)
+        hours, minutes = divmod(total_minutes, 60)
+        if hours:
+            return f"{hours} ч. {minutes} мин." if minutes else f"{hours} ч."
+        return f"{minutes} мин."
+
+    def check_study_time(self) -> None:
+        """Check the configured study target and grant unlimited Steam access when reached."""
+        required = self._required_study_minutes_for_today()
+        elapsed_seconds = self._study_elapsed_seconds()
+
+        if elapsed_seconds is None and required > 0:
+            self.messagebox.showinfo(
+                self.t("check_no_session_title"),
+                self.t("check_no_session_message", required=self._format_duration(required * 60)),
+                parent=self.root,
+            )
+            log_event("study_check_without_session", f"Дневная норма: {required} мин.")
+            return
+
+        elapsed_seconds = elapsed_seconds or 0
+        required_seconds = required * 60
+        remaining_seconds = max(0, required_seconds - elapsed_seconds)
+        if remaining_seconds > 0:
+            elapsed_text = self._format_duration(elapsed_seconds)
+            required_text = self._format_duration(required_seconds)
+            remaining_text = self._format_duration(remaining_seconds)
+            message = self.t(
+                "check_remaining_message",
+                elapsed=elapsed_text,
+                required=required_text,
+                remaining=remaining_text,
+            )
+            self.messagebox.showinfo(
+                self.t("check_remaining_title"),
+                message,
+                parent=self.root,
+            )
+            self._refresh_ui(message)
+            log_event(
+                "study_check_remaining",
+                f"Прошло {elapsed_text}; осталось {remaining_text}; норма {required_text}",
+            )
+            return
+
+        elapsed_text = self._format_duration(elapsed_seconds)
+        required_text = self._format_duration(required_seconds)
+        self.messagebox.showinfo(
+            self.t("check_complete_title"),
+            self.t(
+                "check_complete_message",
+                elapsed=elapsed_text,
+                required=required_text,
+            ),
             parent=self.root,
         )
-        return False
+        log_event("study_requirement_met", f"Засчитано {elapsed_text}; норма {required_text}")
+        self._grant_unlimited()
 
     def grant_all_done(self) -> None:
-        if not self._check_minimum_study_time():
-            return
-        log_event("all_done_unlimited", "Пользователь отметил выполнение плана")
-        self._grant_unlimited()
+        # The manual completion button uses the same time gate as the new Check button.
+        self.check_study_time()
 
     def grant_temporary_unlimited(self) -> None:
         log_event("temporary_unlimited", "Выдан неограниченный временный доступ")
