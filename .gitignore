@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+activity_log.csv
+state.json
+guard.lock
+stop.request
+*.log
