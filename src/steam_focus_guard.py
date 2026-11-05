@@ -250,6 +250,9 @@ class SteamFocusGuard:
         else:
             status = self.t("status_blocked")
         self.status_label.configure(text=status)
+        if hasattr(self, "reset_timer_button"):
+            reset_available = self.mode not in ("timed", "unlimited")
+            self.reset_timer_button.configure(state="normal" if reset_available else "disabled")
         self.footer_label.configure(text=self.t("footer_hint"))
 
     @staticmethod
@@ -350,6 +353,8 @@ class SteamFocusGuard:
             self.root.after(1000, self._update_timer_display)
 
     def reset_study_timer(self) -> None:
+        if self.mode in ("timed", "unlimited"):
+            return
         confirmed = self.messagebox.askyesno(
             self.t("reset_timer_title"),
             self.t("reset_timer_message"),
