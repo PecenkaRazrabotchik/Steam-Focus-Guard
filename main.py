@@ -1,7 +1,6 @@
-"""Application entry point."""
+"""Steam Focus Guard application entry point."""
 
-from src.steam_focus_guard import main
-
+from src.app import main
 
 if __name__ == "__main__":
     raise SystemExit(main())
