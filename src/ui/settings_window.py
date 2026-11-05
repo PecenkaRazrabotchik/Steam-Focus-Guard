@@ -33,6 +33,7 @@ class SettingsWindow:
         self.day_names = {key: DAY_NAMES[index].capitalize() for index, key in enumerate(DAY_KEYS)}
         self.name_to_day = {name: key for key, name in self.day_names.items()}
         self.day_var = tk.StringVar(value=self.day_names[DAY_KEYS[0]])
+        self.current_day_key = DAY_KEYS[0]
         self.required_var = tk.StringVar()
         self.task_entry_var = tk.StringVar()
         self.app_vars: dict[str, tk.Variable] = {}
@@ -202,6 +203,7 @@ class SettingsWindow:
 
     def _load_day(self) -> None:
         key = self.name_to_day.get(self.day_var.get(), DAY_KEYS[0])
+        self.current_day_key = key
         data = self.config.get("schedule", {}).get(key, {})
         self.required_var.set(str(data.get("required_study_minutes", 0)))
         self.task_list.delete(0, tk.END)
@@ -209,7 +211,7 @@ class SettingsWindow:
             self.task_list.insert(tk.END, str(task))
 
     def _store_day(self) -> None:
-        key = self.name_to_day.get(self.day_var.get(), DAY_KEYS[0])
+        key = self.current_day_key
         try:
             required = int(self.required_var.get())
         except (TypeError, ValueError):
@@ -228,6 +230,7 @@ class SettingsWindow:
         try:
             self._store_day()
         except ValueError as exc:
+            self.day_var.set(self.day_names[self.current_day_key])
             messagebox.showerror("Некорректная норма", str(exc), parent=self.window)
             return
         self._load_day()
@@ -306,6 +309,7 @@ class SettingsWindow:
             app["always_on_top"] = bool(self.app_vars["always_on_top"].get())
 
             ui = self.config.setdefault("ui", {})
+            ui.pop("all_done_button", None)
             for key, variable in self.ui_vars.items():
                 ui[key] = variable.get()
 
