@@ -56,16 +56,19 @@ class SteamFocusGuard:
         self.study_running_since = self.state.get("study_running_since")
         # Migrate legacy sessions that stored only their start timestamp.
         legacy_started_at = self.state.get("study_started_at")
-        if self.study_date != datetime.now().date().isoformat():
+        today = datetime.now().date().isoformat()
+        if not self.study_date and legacy_started_at:
+            try:
+                legacy_start = float(legacy_started_at)
+                if datetime.fromtimestamp(legacy_start).date().isoformat() == today:
+                    self.study_date = today
+                    self.study_running_since = legacy_start
+            except (TypeError, ValueError, OSError, OverflowError):
+                pass
+        if self.study_date != today:
             self.study_date = None
             self.study_elapsed_seconds = 0
             self.study_running_since = None
-        elif self.study_running_since is None and legacy_started_at:
-            try:
-                if datetime.fromtimestamp(float(legacy_started_at)).date() == datetime.now().date():
-                    self.study_running_since = float(legacy_started_at)
-            except (TypeError, ValueError, OSError, OverflowError):
-                self.study_running_since = None
         if self.mode == "timed":
             self._timer_end = self.state.get("timed_until")
             if not isinstance(self._timer_end, (int, float)) or self._timer_end <= time.time():
@@ -108,7 +111,7 @@ class SteamFocusGuard:
         save_json(STATE_PATH, {
             "mode": self.mode,
             "study_date": self.study_date,
-            "study_elapsed_seconds": self._study_elapsed_seconds() or 0,
+            "study_elapsed_seconds": self.study_elapsed_seconds,
             "study_running_since": self.study_running_since,
             "timed_until": self._timer_end,
         })
