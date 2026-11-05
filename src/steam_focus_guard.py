@@ -205,6 +205,19 @@ class SteamFocusGuard:
             f'{int(self.app_config.get("window_width", 650))}x{int(self.app_config.get("window_height", 700))}'
         )
         self.root.attributes("-topmost", bool(self.app_config.get("always_on_top", True)))
+        button_texts = (
+            (self.primary_button, "study_button"),
+            (self.check_button, "check_button"),
+            (self.reset_timer_button, "reset_timer_button"),
+            (self.settings_button, "settings_button"),
+            (self.temporary_button, "temporary_button"),
+            (self.temp_unlimited_button, "unlimited_button"),
+            (self.temp_30_button, "thirty_minutes_button"),
+            (self.back_button, "back_button"),
+        )
+        for button, key in button_texts:
+            button.configure(text=self.t(key))
+        self.temp_heading.configure(text=self.t("temporary_heading"))
         self._refresh_ui()
         self._update_timer_display(schedule_next=False)
 
