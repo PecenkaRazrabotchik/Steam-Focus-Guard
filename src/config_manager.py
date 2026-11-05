@@ -67,8 +67,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "startup_removed": "Автозапуск удалён.",
         "stop_requested": "Команда остановки отправлена защитнику.",
         "dependency_missing": "Не найден модуль psutil. Установи его командой: py -m pip install psutil",
-        "config_error_title": "Ошибка config.json",
-        "config_error_message": "Не удалось прочитать config.json. Используются встроенные настройки. Подробности: {error}",
+        "config_error_title": "Ошибка config/config.json",
+        "config_error_message": "Не удалось прочитать config/config.json. Используются встроенные настройки. Подробности: {error}",
         "notification_title": "Фокус",
         "close_button": "Закрыть окно",
         "footer_hint": "Расписание и надписи можно изменить в окне «Настройки».",
@@ -155,6 +155,8 @@ def load_config() -> tuple[dict[str, Any], str | None]:
         user_config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
         if not isinstance(user_config, dict):
             raise ValueError("Корневой элемент JSON должен быть объектом")
+        if isinstance(user_config.get("ui"), dict):
+            user_config["ui"].pop("all_done_button", None)
         return deep_merge(DEFAULT_CONFIG, user_config), None
     except Exception as exc:
         return deep_merge(DEFAULT_CONFIG, {}), str(exc)
