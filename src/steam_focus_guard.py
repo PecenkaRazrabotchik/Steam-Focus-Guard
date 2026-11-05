@@ -1,13 +1,11 @@
+"""Tkinter UI and Steam process guard controller."""
 from __future__ import annotations
 
-import csv
 import json
 import os
 import subprocess
-import sys
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 try:
@@ -15,233 +13,11 @@ try:
 except ImportError:
     psutil = None
 
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = BASE_DIR / "config.json"
-STATE_PATH = BASE_DIR / "state.json"
-LOG_PATH = BASE_DIR / "activity_log.csv"
-STOP_REQUEST_PATH = BASE_DIR / "stop.request"
-
-DAY_KEYS = (
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-)
-DAY_NAMES = (
-    "понедельник",
-    "вторник",
-    "среда",
-    "четверг",
-    "пятница",
-    "суббота",
-    "воскресенье",
-)
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "app": {
-        "steam_executable": "",
-        "steam_process_names": ["steam.exe"],
-        "scan_interval_ms": 250,
-        "close_grace_seconds": 8,
-        "launch_after_grant": True,
-        "window_width": 650,
-        "window_height": 700,
-        "always_on_top": True,
-    },
-    "rules": {
-        "required_study_minutes": 90
-    },
-    "ui": {
-        "window_title": "Фокус: сначала дела, потом Steam",
-        "heading": "Сначала важное — потом игры",
-        "intro": "Сегодняшний план:",
-        "date_line": "Сегодня: {date} · {weekday}",
-        "empty_schedule": "На сегодня задания не заданы. Добавь их в config.json.",
-        "study_button": "Сначала выполню задания",
-        "check_button": "Проверить",
-        "check_no_session_title": "Учебная сессия не начата",
-        "check_no_session_message": "Сначала нажми «Сначала выполню задания». Норма на сегодня: {required}.",
-        "check_remaining_title": "Нужно ещё позаниматься",
-        "check_remaining_message": "Прошло: {elapsed}. До нормы {required} осталось: {remaining}.",
-        "check_complete_title": "Учебная норма выполнена",
-        "check_complete_message": "Засчитано учебного времени: {elapsed}. Дневная норма {required} выполнена. Полный доступ к Steam открыт.",
-        "temporary_button": "Временно поиграть",
-        "all_done_button": "Всё сделано — открыть Steam",
-        "temporary_heading": "На сколько открыть Steam?",
-        "unlimited_button": "Без ограничения",
-        "thirty_minutes_button": "30 минут",
-        "back_button": "Назад",
-        "status_blocked": "Steam заблокирован до твоего решения.",
-        "status_study": "Режим учёбы: сначала выполни план, затем возвращайся.",
-        "status_timed": "Временный доступ активен. Осталось: {time_left}.",
-        "status_unlimited": "Steam открыт до закрытия игры.",
-        "study_started_title": "Учебная сессия отмечена",
-        "study_started_message": "Отметил начало занятий. Когда закончишь, снова открой Steam и выбери «Всё сделано».",
-        "time_warning_5": "Осталось 5 минут игры. Заверши текущий матч или сохранение.",
-        "time_warning_1": "Осталась 1 минута. Steam скоро будет закрыт.",
-        "time_finished_title": "Время вышло",
-        "time_finished_message": "Лимит в 30 минут закончился. Steam закрыт.",
-        "steam_not_found_title": "Не удалось найти Steam",
-        "steam_not_found_message": "Разрешение выдано, но путь к steam.exe не найден. Укажи его в config.json или запусти Steam вручную.",
-        "minimum_time_title": "Сначала нужно позаниматься",
-        "minimum_time_message": "С момента начала учебной сессии прошло {elapsed} мин. Для полного доступа нужно не менее {required} мин.",
-        "exit_title": "Остановить защиту?",
-        "exit_message": "Защитник Steam будет закрыт. Пока он не запущен, попытки открыть Steam не будут перехватываться. Продолжить?",
-        "already_running": "Защитник Steam уже запущен.",
-        "startup_installed": "Автозапуск добавлен. Защитник будет запускаться при входе в Windows.",
-        "startup_removed": "Автозапуск удалён.",
-        "stop_requested": "Команда остановки отправлена защитнику.",
-        "dependency_missing": "Не найден модуль psutil. Установи его командой: py -m pip install psutil",
-        "config_error_title": "Ошибка config.json",
-        "config_error_message": "Не удалось прочитать config.json. Используются встроенные настройки. Подробности: {error}",
-        "notification_title": "Фокус",
-        "close_button": "Закрыть окно",
-        "footer_hint": "План и все надписи можно изменить в config.json.",
-    },
-    "schedule": {
-        "monday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: университетские задания — 45 минут",
-                "Дополнительно, если есть силы: базы данных и SQL — 30 минут",
-                "Минимум: английский — 10–15 минут"
-            ]
-        },
-        "tuesday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: Python — написать код или решить задачи, 45 минут",
-                "Дополнительно: ААС или другое задание университета — 30 минут",
-                "Минимум: повторить английские слова — 10–15 минут"
-            ]
-        },
-        "wednesday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: SQL — написать и проверить запросы, 45 минут",
-                "Дополнительно: Python — повторить пройденное, 30 минут",
-                "Минимум: английская грамматика или чтение — 10–15 минут"
-            ]
-        },
-        "thursday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: университетские задания и подготовка — 45 минут",
-                "Дополнительно: Python — практика, 30 минут",
-                "Минимум: английские слова — 10–15 минут"
-            ]
-        },
-        "friday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: закрыть срочные задания и проверить дедлайны — 45 минут",
-                "Дополнительно: повторить SQL или Python по слабым местам — 30 минут",
-                "Минимум: повторить английский за неделю — 10–15 минут"
-            ]
-        },
-        "saturday": {
-            "required_study_minutes": 60,
-            "tasks": [
-                "Гибкий день: выбрать одно самое важное или накопившееся задание — 45–60 минут",
-                "По желанию: английский или повторение материала — 10–15 минут"
-            ]
-        },
-        "sunday": {
-            "required_study_minutes": 0,
-            "tasks": [
-                "Отдых и восстановление",
-                "По желанию: составить план на следующую неделю — 10–15 минут"
-            ]
-        },
-        "special_dates": {}
-    }
-}
-
-
-def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Merge user settings over defaults while preserving missing default keys."""
-    result = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
-def load_config() -> tuple[dict[str, Any], str | None]:
-    if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding="utf-8")
-        return DEFAULT_CONFIG, None
-    try:
-        user_config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-        if not isinstance(user_config, dict):
-            raise ValueError("Корневой элемент JSON должен быть объектом")
-        return deep_merge(DEFAULT_CONFIG, user_config), None
-    except Exception as exc:  # Keep the guard available even if config was edited incorrectly.
-        return DEFAULT_CONFIG, str(exc)
-
-
-def save_json(path: Path, data: dict[str, Any]) -> None:
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
-
-
-def log_event(event: str, details: str = "") -> None:
-    new_file = not LOG_PATH.exists()
-    with LOG_PATH.open("a", newline="", encoding="utf-8-sig") as file:
-        writer = csv.writer(file, delimiter=";")
-        if new_file:
-            writer.writerow(["Время", "Событие", "Подробности"])
-        writer.writerow([datetime.now().astimezone().isoformat(timespec="seconds"), event, details])
-
-
-def get_steam_executable(config: dict[str, Any], detected_path: str | None = None) -> Path | None:
-    candidates: list[Path] = []
-    configured = str(config.get("app", {}).get("steam_executable", "")).strip().strip('"')
-    if configured:
-        candidates.append(Path(os.path.expandvars(configured)))
-    if detected_path:
-        candidates.append(Path(detected_path))
-
-    if os.name == "nt":
-        try:
-            import winreg
-            registry_locations = (
-                (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamExe"),
-                (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
-                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
-                (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
-            )
-            for hive, subkey, value_name in registry_locations:
-                try:
-                    with winreg.OpenKey(hive, subkey) as key:
-                        value, _ = winreg.QueryValueEx(key, value_name)
-                    candidate = Path(value)
-                    if candidate.is_dir():
-                        candidate = candidate / "steam.exe"
-                    candidates.append(candidate)
-                except OSError:
-                    continue
-        except ImportError:
-            pass
-
-    candidates.extend([
-        Path(r"C:\Program Files (x86)\Steam\steam.exe"),
-        Path(r"C:\Program Files\Steam\steam.exe"),
-    ])
-    for candidate in candidates:
-        try:
-            if candidate.is_file() and candidate.name.lower() == "steam.exe":
-                return candidate.resolve()
-        except OSError:
-            continue
-    return None
+from src.config_manager import load_config
+from src.paths import STATE_PATH, STOP_REQUEST_PATH
+from src.scheduler import schedule_for_today, required_study_minutes_for_today
+from src.steam_utils import get_steam_executable
+from src.storage import log_event, save_json
 
 
 class SteamFocusGuard:
@@ -295,6 +71,7 @@ class SteamFocusGuard:
 
         self._build_ui()
         self._refresh_ui()
+        self._update_timer_display()
         if self.config_error:
             self.root.after(400, lambda: self.messagebox.showwarning(
                 self.ui_text["config_error_title"],
@@ -345,7 +122,14 @@ class SteamFocusGuard:
             self.outer, text="", bg="#151820", fg="#a9b2c2",
             font=("Segoe UI", 10)
         )
-        self.date_label.pack(anchor="w", pady=(0, 18))
+        self.date_label.pack(anchor="w", pady=(0, 12))
+
+        self.timer_label = tk.Label(
+            self.outer, text="", bg="#222936", fg="#f2f4f8",
+            font=("Segoe UI", 12, "bold"), padx=12, pady=10,
+            wraplength=560, justify="left"
+        )
+        self.timer_label.pack(fill="x", pady=(0, 12))
 
         self.status_label = tk.Label(
             self.outer, text="", bg="#222936", fg="#d9e2f2",
@@ -374,10 +158,10 @@ class SteamFocusGuard:
         self.primary_button.pack(fill="x", pady=2)
         self.check_button = self._make_button(self.action_frame, "check_button", self.check_study_time)
         self.check_button.pack(fill="x", pady=2)
+        self.reset_timer_button = self._make_button(self.action_frame, "reset_timer_button", self.reset_study_timer)
+        self.reset_timer_button.pack(fill="x", pady=2)
         self.temporary_button = self._make_button(self.action_frame, "temporary_button", self.show_temporary_options)
         self.temporary_button.pack(fill="x", pady=2)
-        self.done_button = self._make_button(self.action_frame, "all_done_button", self.grant_all_done)
-        self.done_button.pack(fill="x", pady=2)
 
         self.temp_frame = tk.Frame(self.outer, bg="#151820")
         self.temp_heading = tk.Label(
@@ -411,21 +195,7 @@ class SteamFocusGuard:
         return button
 
     def _schedule_for_today(self) -> tuple[str, list[str]]:
-        now = datetime.now()
-        date_key = now.date().isoformat()
-        schedule = self.config.get("schedule", {})
-        special = schedule.get("special_dates", {}).get(date_key)
-        day_key = DAY_KEYS[now.weekday()]
-        day_data = special if isinstance(special, dict) else schedule.get(day_key, {})
-        if not isinstance(day_data, dict):
-            day_data = {}
-        tasks = day_data.get("tasks", [])
-        if not isinstance(tasks, list):
-            tasks = []
-        tasks = [str(task) for task in tasks if str(task).strip()]
-        custom_label = day_data.get("label")
-        day_name = str(custom_label) if custom_label else DAY_NAMES[now.weekday()]
-        return day_name, tasks
+        return schedule_for_today(self.config)
 
     def _refresh_ui(self, extra_status: str | None = None) -> None:
         day_name, tasks = self._schedule_for_today()
@@ -510,27 +280,7 @@ class SteamFocusGuard:
         self.root.iconify()
 
     def _required_study_minutes_for_today(self) -> int:
-        """Return today's requirement, using a day override or the global config value."""
-        schedule = self.config.get("schedule", {})
-        date_key = datetime.now().date().isoformat()
-        special = schedule.get("special_dates", {}).get(date_key)
-        day_key = DAY_KEYS[datetime.now().weekday()]
-        day_data = special if isinstance(special, dict) else schedule.get(day_key, {})
-        if not isinstance(day_data, dict):
-            day_data = {}
-
-        rules = self.config.get("rules", {})
-        configured_value = day_data.get("required_study_minutes")
-        if configured_value is None:
-            # Keep compatibility with older configs that used this setting name.
-            configured_value = rules.get(
-                "required_study_minutes",
-                rules.get("minimum_study_minutes_for_all_done", 90),
-            )
-        try:
-            return max(0, int(configured_value))
-        except (TypeError, ValueError):
-            return 90
+        return required_study_minutes_for_today(self.config)
 
     def _study_elapsed_seconds(self) -> int | None:
         """Return elapsed wall-clock time since today's study start, or None if not started."""
@@ -543,6 +293,50 @@ class SteamFocusGuard:
             return max(0, int(time.time() - started_at))
         except (TypeError, ValueError, OSError, OverflowError):
             return None
+
+    @staticmethod
+    def _format_clock(seconds: int) -> str:
+        hours, remainder = divmod(max(0, int(seconds)), 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    def _update_timer_display(self) -> None:
+        if not self.running:
+            return
+        required_seconds = self._required_study_minutes_for_today() * 60
+        if self.mode == "timed" and self._timer_end is not None:
+            remaining = max(0, int(self._timer_end - time.time()))
+            text = self.t("timer_game_display", remaining=self._format_clock(remaining))
+        else:
+            elapsed = self._study_elapsed_seconds()
+            if elapsed is None:
+                text = self.t("timer_not_started", required=self._format_clock(required_seconds))
+            else:
+                remaining = max(0, required_seconds - elapsed)
+                text = self.t(
+                    "timer_study_display",
+                    elapsed=self._format_clock(elapsed),
+                    required=self._format_clock(required_seconds),
+                    remaining=self._format_clock(remaining),
+                )
+        self.timer_label.configure(text=text)
+        self.root.after(1000, self._update_timer_display)
+
+    def reset_study_timer(self) -> None:
+        confirmed = self.messagebox.askyesno(
+            self.t("reset_timer_title"),
+            self.t("reset_timer_message"),
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        self.study_started_at = None
+        if self.mode == "study":
+            self.mode = "blocked"
+        self._save_state()
+        log_event("study_timer_reset", "Учебный таймер сброшен пользователем")
+        self._refresh_ui()
+        self._update_timer_display()
 
     @staticmethod
     def _format_duration(seconds: int) -> str:
@@ -604,10 +398,6 @@ class SteamFocusGuard:
         )
         log_event("study_requirement_met", f"Засчитано {elapsed_text}; норма {required_text}")
         self._grant_unlimited()
-
-    def grant_all_done(self) -> None:
-        # The manual completion button uses the same time gate as the new Check button.
-        self.check_study_time()
 
     def grant_temporary_unlimited(self) -> None:
         log_event("temporary_unlimited", "Выдан неограниченный временный доступ")
@@ -833,102 +623,3 @@ class SteamFocusGuard:
 
     def run(self) -> None:
         self.root.mainloop()
-
-
-def install_startup() -> int:
-    if os.name != "nt":
-        print("Автозапуск через реестр доступен только в Windows.")
-        return 1
-    import winreg
-
-    python_path = Path(sys.executable)
-    if python_path.name.lower() in {"python.exe", "python3.exe"}:
-        pythonw = python_path.with_name("pythonw.exe")
-        if pythonw.exists():
-            python_path = pythonw
-    command = f'"{python_path}" "{Path(__file__).resolve()}" --background'
-    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-        winreg.SetValueEx(key, "SteamFocusGuard", 0, winreg.REG_SZ, command)
-    config, _ = load_config()
-    print(config["ui"]["startup_installed"])
-    return 0
-
-
-def uninstall_startup() -> int:
-    if os.name != "nt":
-        print("Автозапуск через реестр доступен только в Windows.")
-        return 1
-    import winreg
-
-    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-        try:
-            winreg.DeleteValue(key, "SteamFocusGuard")
-        except FileNotFoundError:
-            pass
-    config, _ = load_config()
-    print(config["ui"]["startup_removed"])
-    return 0
-
-
-def main() -> int:
-    args = set(sys.argv[1:])
-    if "--install-startup" in args:
-        return install_startup()
-    if "--uninstall-startup" in args:
-        return uninstall_startup()
-    if "--stop" in args:
-        STOP_REQUEST_PATH.write_text("stop", encoding="utf-8")
-        config, _ = load_config()
-        print(config["ui"]["stop_requested"])
-        return 0
-
-    if os.name != "nt":
-        print("Этот скрипт рассчитан на Windows.")
-        return 1
-    if psutil is None:
-        config, _ = load_config()
-        print(config["ui"]["dependency_missing"])
-        return 1
-
-    # A simple lock prevents accidentally running two watchdog instances.
-    try:
-        import msvcrt
-        lock_file = (BASE_DIR / "guard.lock").open("a+")
-        lock_file.seek(0)
-        if lock_file.read(1) == "":
-            lock_file.write("0")
-            lock_file.flush()
-        lock_file.seek(0)
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-    except OSError:
-        config, _ = load_config()
-        print(config["ui"]["already_running"])
-        return 0
-    except Exception:
-        lock_file = None
-
-    try:
-        if STOP_REQUEST_PATH.exists():
-            STOP_REQUEST_PATH.unlink()
-    except OSError:
-        pass
-
-    try:
-        app = SteamFocusGuard(background="--background" in args)
-        app.run()
-    finally:
-        try:
-            if lock_file:
-                import msvcrt
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                lock_file.close()
-        except Exception:
-            pass
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
