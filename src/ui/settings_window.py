@@ -177,7 +177,8 @@ class SettingsWindow:
             child.destroy()
         self.ui_vars.clear()
         ui = self.config.get("ui", {})
-        for row, key in enumerate(sorted(ui)):
+        visible_keys = [key for key in sorted(ui) if key != "all_done_button"]
+        for row, key in enumerate(visible_keys):
             ttk.Label(self.ui_inner, text=key).grid(
                 row=row, column=0, sticky="nw", padx=(0, 12), pady=5
             )
