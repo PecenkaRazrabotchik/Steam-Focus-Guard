@@ -64,7 +64,8 @@
     "reset_timer_message": "Прошедшее учебное время будет обнулено. Чтобы начать новую сессию, нажми «Сначала выполни задания». Продолжить?",
     "timer_not_started": "Учебное время: 00:00:00 / {required} · сессия не начата",
     "timer_study_display": "Учебное время: {elapsed} / {required} · осталось: {remaining}",
-    "timer_game_display": "Игровой таймер: {remaining}"
+    "timer_game_display": "Игровой таймер: {remaining}",
+    "settings_button": "Настройки"
   },
   "schedule": {
     "monday": {
