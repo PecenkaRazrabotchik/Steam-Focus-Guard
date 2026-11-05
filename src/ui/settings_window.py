@@ -264,12 +264,16 @@ class SettingsWindow:
     def reset(self) -> None:
         confirmed = messagebox.askyesno(
             "Сброс настроек",
-            "Вернуть встроенные настройки по умолчанию? Текущие изменения вступят в силу только после сохранения.",
+            "Вернуть встроенные настройки по умолчанию? Особые даты сохранятся. Остальные изменения вступят в силу только после сохранения.",
             parent=self.window,
         )
         if not confirmed:
             return
+        special_dates = copy.deepcopy(
+            self.config.get("schedule", {}).get("special_dates", {})
+        )
         self.config = copy.deepcopy(DEFAULT_CONFIG)
+        self.config.setdefault("schedule", {})["special_dates"] = special_dates
         self._load_app()
         self._load_ui()
         self._load_day()
