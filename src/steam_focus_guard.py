@@ -51,7 +51,24 @@ class SteamFocusGuard:
         if self.mode == "unlimited":
             # Unlimited permission is deliberately session-only and is not restored after a guard restart.
             self.mode = "blocked"
-        self.study_started_at = self.state.get("study_started_at")
+        self.study_date = self.state.get("study_date")
+        self.study_elapsed_seconds = max(0, int(self.state.get("study_elapsed_seconds", 0) or 0))
+        self.study_running_since = self.state.get("study_running_since")
+        # Migrate legacy sessions that stored only their start timestamp.
+        legacy_started_at = self.state.get("study_started_at")
+        today = datetime.now().date().isoformat()
+        if not self.study_date and legacy_started_at:
+            try:
+                legacy_start = float(legacy_started_at)
+                if datetime.fromtimestamp(legacy_start).date().isoformat() == today:
+                    self.study_date = today
+                    self.study_running_since = legacy_start
+            except (TypeError, ValueError, OSError, OverflowError):
+                pass
+        if self.study_date != today:
+            self.study_date = None
+            self.study_elapsed_seconds = 0
+            self.study_running_since = None
         if self.mode == "timed":
             self._timer_end = self.state.get("timed_until")
             if not isinstance(self._timer_end, (int, float)) or self._timer_end <= time.time():
@@ -93,7 +110,9 @@ class SteamFocusGuard:
     def _save_state(self) -> None:
         save_json(STATE_PATH, {
             "mode": self.mode,
-            "study_started_at": self.study_started_at,
+            "study_date": self.study_date,
+            "study_elapsed_seconds": self.study_elapsed_seconds,
+            "study_running_since": self.study_running_since,
             "timed_until": self._timer_end,
         })
 
@@ -137,6 +156,7 @@ class SteamFocusGuard:
             font=("Segoe UI", 10), padx=12, pady=10, wraplength=560, justify="left"
         )
         self.status_label.pack(fill="x", pady=(0, 18))
+        self.status_label.configure(text=self.t("status_message"))
 
         self.plan_heading = tk.Label(
             self.outer, text="", bg="#151820", fg="#f2f4f8",
@@ -157,6 +177,8 @@ class SteamFocusGuard:
 
         self.primary_button = self._make_button(self.action_frame, "study_button", self.mark_study_started, primary=True)
         self.primary_button.pack(fill="x", pady=2)
+        self.pause_button = self._make_button(self.action_frame, "pause_button", self.toggle_study_pause)
+        self.pause_button.pack(fill="x", pady=2)
         self.check_button = self._make_button(self.action_frame, "check_button", self.check_study_time)
         self.check_button.pack(fill="x", pady=2)
         self.reset_timer_button = self._make_button(self.action_frame, "reset_timer_button", self.reset_study_timer)
@@ -218,6 +240,7 @@ class SteamFocusGuard:
         for button, key in button_texts:
             button.configure(text=self.t(key))
         self.temp_heading.configure(text=self.t("temporary_heading"))
+        self.status_label.configure(text=self.t("status_message"))
         self._refresh_ui()
         self._update_timer_display(schedule_next=False)
 
@@ -251,18 +274,15 @@ class SteamFocusGuard:
             self.plan_box.insert("end", self.t("empty_schedule"))
         self.plan_box.configure(state="disabled")
 
-        if extra_status:
-            status = extra_status
-        elif self.mode == "timed" and self._timer_end:
-            remaining = max(0, int(self._timer_end - time.time()))
-            status = self.t("status_timed", time_left=self._format_seconds(remaining))
-        elif self.mode == "unlimited":
-            status = self.t("status_unlimited")
-        elif self.mode == "study":
-            status = self.t("status_study")
-        else:
-            status = self.t("status_blocked")
-        self.status_label.configure(text=status)
+        # This label is intentionally static: users edit it in Settings.
+        self.status_label.configure(text=self.t("status_message"))
+        if hasattr(self, "pause_button"):
+            is_running = self.study_running_since is not None and self.study_date == datetime.now().date().isoformat()
+            has_session = is_running or self.study_date == datetime.now().date().isoformat()
+            self.pause_button.configure(
+                text=self.t("pause_button") if is_running else self.t("resume_button"),
+                state="normal" if has_session else "disabled",
+            )
         if hasattr(self, "reset_timer_button"):
             reset_available = self.mode not in ("timed", "unlimited")
             self.reset_timer_button.configure(state="normal" if reset_available else "disabled")
@@ -307,34 +327,50 @@ class SteamFocusGuard:
         self._bring_to_front()
 
     def mark_study_started(self) -> None:
-        started_today = False
-        if self.study_started_at:
-            try:
-                started_today = datetime.fromtimestamp(float(self.study_started_at)).date() == datetime.now().date()
-            except (TypeError, ValueError, OSError):
-                started_today = False
-        if not started_today:
-            self.study_started_at = time.time()
+        today = datetime.now().date().isoformat()
+        if self.study_date != today:
+            self.study_date = today
+            self.study_elapsed_seconds = 0
+            self.study_running_since = None
+        if self.study_running_since is None:
+            self.study_running_since = time.time()
         self.mode = "study"
         self._save_state()
-        log_event("study_started", "Пользователь отметил начало занятий")
-        self._refresh_ui(self.t("study_started_message"))
+        log_event("study_started", "Учебная сессия запущена или продолжена")
+        self._refresh_ui()
+        self._update_timer_display(schedule_next=False)
         self.root.iconify()
+
+    def toggle_study_pause(self) -> None:
+        today = datetime.now().date().isoformat()
+        if self.study_date != today:
+            return
+        if self.study_running_since is not None:
+            self.study_elapsed_seconds = self._study_elapsed_seconds() or 0
+            self.study_running_since = None
+            log_event("study_paused", "Учебный таймер поставлен на паузу")
+        else:
+            self.study_running_since = time.time()
+            self.mode = "study"
+            log_event("study_resumed", "Учебный таймер продолжен")
+        self._save_state()
+        self._refresh_ui()
+        self._update_timer_display(schedule_next=False)
 
     def _required_study_minutes_for_today(self) -> int:
         return required_study_minutes_for_today(self.config)
 
     def _study_elapsed_seconds(self) -> int | None:
-        """Return elapsed wall-clock time since today's study start, or None if not started."""
-        if not self.study_started_at:
+        """Return accumulated study time, excluding every paused interval."""
+        if self.study_date != datetime.now().date().isoformat():
             return None
-        try:
-            started_at = float(self.study_started_at)
-            if datetime.fromtimestamp(started_at).date() != datetime.now().date():
-                return None
-            return max(0, int(time.time() - started_at))
-        except (TypeError, ValueError, OSError, OverflowError):
-            return None
+        elapsed = max(0, int(self.study_elapsed_seconds))
+        if self.study_running_since is not None:
+            try:
+                elapsed += max(0, int(time.time() - float(self.study_running_since)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        return elapsed
 
     @staticmethod
     def _format_clock(seconds: int) -> str:
@@ -355,12 +391,19 @@ class SteamFocusGuard:
                 text = self.t("timer_not_started", required=self._format_clock(required_seconds))
             else:
                 remaining = max(0, required_seconds - elapsed)
-                text = self.t(
-                    "timer_study_display",
-                    elapsed=self._format_clock(elapsed),
-                    required=self._format_clock(required_seconds),
-                    remaining=self._format_clock(remaining),
-                )
+                if self.study_running_since is None:
+                    text = self.t(
+                        "timer_paused_display",
+                        elapsed=self._format_clock(elapsed),
+                        required=self._format_clock(required_seconds),
+                    )
+                else:
+                    text = self.t(
+                        "timer_study_display",
+                        elapsed=self._format_clock(elapsed),
+                        required=self._format_clock(required_seconds),
+                        remaining=self._format_clock(remaining),
+                    )
         self.timer_label.configure(text=text)
         if schedule_next:
             self.root.after(1000, self._update_timer_display)
@@ -375,7 +418,9 @@ class SteamFocusGuard:
         )
         if not confirmed:
             return
-        self.study_started_at = None
+        self.study_date = None
+        self.study_elapsed_seconds = 0
+        self.study_running_since = None
         if self.mode == "study":
             self.mode = "blocked"
         self._save_state()
@@ -423,7 +468,6 @@ class SteamFocusGuard:
                 message,
                 parent=self.root,
             )
-            self._refresh_ui(message)
             log_event(
                 "study_check_remaining",
                 f"Прошло {elapsed_text}; осталось {remaining_text}; норма {required_text}",
@@ -572,7 +616,9 @@ class SteamFocusGuard:
             self._terminate_steam_processes(processes)
         self.mode = "blocked"
         self._timer_end = None
-        self.study_started_at = None
+        self.study_date = None
+        self.study_elapsed_seconds = 0
+        self.study_running_since = None
         self._save_state()
         log_event("time_expired", "Лимит 30 минут истёк; Steam закрыт")
         self.show_gate(self.t("time_finished_message"))
@@ -595,8 +641,8 @@ class SteamFocusGuard:
             log_event("warning_1m", "Осталась 1 минута")
             self.show_notification(self.t("time_warning_1"))
         remaining_text = self.t("status_timed", time_left=self._format_seconds(remaining))
-        self.status_label.configure(text=remaining_text)
-
+        # The status message below the timer is user-editable and remains unchanged.
+        
     def _monitor_processes(self) -> None:
         if not self.running:
             return
@@ -638,7 +684,9 @@ class SteamFocusGuard:
                 elif time.monotonic() - self._steam_missing_since >= float(self.app_config.get("close_grace_seconds", 8)):
                     self.mode = "blocked"
                     self._timer_end = None
-                    self.study_started_at = None
+                    self.study_date = None
+                    self.study_elapsed_seconds = 0
+                    self.study_running_since = None
                     self._steam_seen_in_session = False
                     self._steam_missing_since = None
                     self._save_state()
