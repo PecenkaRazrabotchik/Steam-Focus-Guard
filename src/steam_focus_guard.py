@@ -206,7 +206,7 @@ class SteamFocusGuard:
         )
         self.root.attributes("-topmost", bool(self.app_config.get("always_on_top", True)))
         self._refresh_ui()
-        self._update_timer_display()
+        self._update_timer_display(schedule_next=False)
 
     def _make_button(self, parent: Any, key: str, command: Any, primary: bool = False) -> Any:
         tk = self.tk
@@ -326,7 +326,7 @@ class SteamFocusGuard:
         minutes, secs = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-    def _update_timer_display(self) -> None:
+    def _update_timer_display(self, schedule_next: bool = True) -> None:
         if not self.running:
             return
         required_seconds = self._required_study_minutes_for_today() * 60
@@ -346,7 +346,8 @@ class SteamFocusGuard:
                     remaining=self._format_clock(remaining),
                 )
         self.timer_label.configure(text=text)
-        self.root.after(1000, self._update_timer_display)
+        if schedule_next:
+            self.root.after(1000, self._update_timer_display)
 
     def reset_study_timer(self) -> None:
         confirmed = self.messagebox.askyesno(
@@ -362,7 +363,7 @@ class SteamFocusGuard:
         self._save_state()
         log_event("study_timer_reset", "Учебный таймер сброшен пользователем")
         self._refresh_ui()
-        self._update_timer_display()
+        self._update_timer_display(schedule_next=False)
 
     @staticmethod
     def _format_duration(seconds: int) -> str:
