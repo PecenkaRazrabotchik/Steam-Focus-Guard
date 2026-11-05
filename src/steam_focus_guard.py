@@ -44,6 +44,7 @@ class SteamFocusGuard:
         self._timer_end: float | None = None
         self._warned_5 = False
         self._warned_1 = False
+        self.settings_window = None
 
         self.state = self._load_state()
         self.mode = self.state.get("mode", "blocked")
@@ -160,6 +161,8 @@ class SteamFocusGuard:
         self.check_button.pack(fill="x", pady=2)
         self.reset_timer_button = self._make_button(self.action_frame, "reset_timer_button", self.reset_study_timer)
         self.reset_timer_button.pack(fill="x", pady=2)
+        self.settings_button = self._make_button(self.action_frame, "settings_button", self.open_settings)
+        self.settings_button.pack(fill="x", pady=(8, 2))
         self.temporary_button = self._make_button(self.action_frame, "temporary_button", self.show_temporary_options)
         self.temporary_button.pack(fill="x", pady=2)
 
@@ -181,6 +184,29 @@ class SteamFocusGuard:
             font=("Segoe UI", 9), wraplength=570, justify="left"
         )
         self.footer_label.pack(anchor="w", pady=(10, 0))
+
+    def open_settings(self) -> None:
+        if self.settings_window is not None:
+            try:
+                if self.settings_window.window.winfo_exists():
+                    self.settings_window.window.lift()
+                    return
+            except Exception:
+                pass
+        from src.ui.settings_window import SettingsWindow
+        self.settings_window = SettingsWindow(self.root, self.config, self._apply_settings)
+
+    def _apply_settings(self, updated_config: dict[str, Any]) -> None:
+        self.config = updated_config
+        self.ui_text = self.config["ui"]
+        self.app_config = self.config["app"]
+        self.root.title(self.t("window_title"))
+        self.root.geometry(
+            f'{int(self.app_config.get("window_width", 650))}x{int(self.app_config.get("window_height", 700))}'
+        )
+        self.root.attributes("-topmost", bool(self.app_config.get("always_on_top", True)))
+        self._refresh_ui()
+        self._update_timer_display()
 
     def _make_button(self, parent: Any, key: str, command: Any, primary: bool = False) -> Any:
         tk = self.tk
