@@ -64,8 +64,10 @@ def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
         for day_data in schedule.values():
             if isinstance(day_data, dict) and isinstance(day_data.get("tasks"), list):
                 old_tasks = day_data["tasks"]
+                was_legacy = any(isinstance(item, str) for item in old_tasks)
                 day_data["tasks"] = normalize_tasks(old_tasks)
-                if any(isinstance(item, str) for item in old_tasks):
+                if was_legacy and day_data.get("required_study_minutes") is not None:
+                    day_data["legacy_required_study_minutes"] = day_data["required_study_minutes"]
                     day_data.pop("required_study_minutes", None)
     rules = config.setdefault("rules", {})
     if isinstance(rules, dict):
