@@ -1,12 +1,11 @@
-"""Schedule resolution for weekdays and date-specific overrides."""
+"""Resolve task lists for weekdays and date-specific overrides."""
 from __future__ import annotations
-
 from datetime import date, datetime
 from typing import Any
+from src.task_manager import normalize_tasks, planned_minutes
 
 DAY_KEYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 DAY_NAMES = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
-
 
 def _day_data(config: dict[str, Any], current_date: date) -> dict[str, Any]:
     schedule = config.get("schedule", {})
@@ -14,32 +13,19 @@ def _day_data(config: dict[str, Any], current_date: date) -> dict[str, Any]:
         return {}
     special_dates = schedule.get("special_dates", {})
     special = special_dates.get(current_date.isoformat()) if isinstance(special_dates, dict) else None
-    day_key = DAY_KEYS[current_date.weekday()]
-    selected = special if isinstance(special, dict) else schedule.get(day_key, {})
+    selected = special if isinstance(special, dict) else schedule.get(DAY_KEYS[current_date.weekday()], {})
     return selected if isinstance(selected, dict) else {}
 
+def tasks_for_date(config: dict[str, Any], current_date: date | None = None) -> list[dict[str, Any]]:
+    current_date = current_date or datetime.now().date()
+    return normalize_tasks(_day_data(config, current_date).get("tasks", []))
 
-def schedule_for_today(config: dict[str, Any], current_date: date | None = None) -> tuple[str, list[str]]:
+def schedule_for_today(config: dict[str, Any], current_date: date | None = None) -> tuple[str, list[dict[str, Any]]]:
     current_date = current_date or datetime.now().date()
     data = _day_data(config, current_date)
-    tasks = data.get("tasks", [])
-    if not isinstance(tasks, list):
-        tasks = []
-    cleaned = [str(task) for task in tasks if str(task).strip()]
     label = data.get("label")
-    return (str(label) if label else DAY_NAMES[current_date.weekday()]), cleaned
-
+    return (str(label) if label else DAY_NAMES[current_date.weekday()]), tasks_for_date(config, current_date)
 
 def required_study_minutes_for_today(config: dict[str, Any], current_date: date | None = None) -> int:
-    current_date = current_date or datetime.now().date()
-    data = _day_data(config, current_date)
-    rules = config.get("rules", {})
-    if not isinstance(rules, dict):
-        rules = {}
-    value = data.get("required_study_minutes")
-    if value is None:
-        value = rules.get("required_study_minutes", rules.get("minimum_study_minutes_for_all_done", 90))
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 90
+    """New task model calculates the target from individual task durations."""
+    return planned_minutes(tasks_for_date(config, current_date))
