@@ -74,11 +74,11 @@ def sync_hosts(domains: Iterable[str]) -> tuple[int, Path]:
         raise PermissionError("Для изменения файла hosts требуются права администратора Windows.")
     selected = normalise_domains(domains)
     path = hosts_path()
-    original = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    original = path.read_text(encoding="utf-8", errors="surrogateescape") if path.exists() else ""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     backup = DATA_DIR / "hosts-before-focus-guard.bak"
     if original and not backup.exists():
-        backup.write_text(original, encoding="utf-8")
+        backup.write_text(original, encoding="utf-8", errors="surrogateescape")
     base = _without_managed_section(original)
     if selected:
         lines = [BEGIN_MARKER]
