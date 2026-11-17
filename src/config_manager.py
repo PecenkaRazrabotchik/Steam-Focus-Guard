@@ -1,137 +1,52 @@
-"""Default configuration and user configuration loading."""
+"""Default configuration, legacy migration and persistence."""
 from __future__ import annotations
-
 import json
 from typing import Any
-
 from src.paths import CONFIG_PATH, DEFAULT_CONFIG_PATH, ensure_project_layout
+from src.task_manager import normalize_tasks
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "app": {
-        "steam_executable": "",
-        "steam_process_names": ["steam.exe"],
-        "scan_interval_ms": 250,
-        "close_grace_seconds": 8,
-        "launch_after_grant": True,
-        "window_width": 650,
-        "window_height": 700,
-        "always_on_top": True,
+        "steam_executable": "", "steam_process_names": ["steam.exe"],
+        "scan_interval_ms": 400, "window_width": 1040, "window_height": 760,
+        "always_on_top": False, "show_in_tray": True,
+        "start_with_windows": False, "close_to_tray": True,
     },
-    "rules": {
-        "required_study_minutes": 90
-    },
+    "rules": {"blocked_apps": [], "blocked_websites": [], "website_blocking_enabled": False},
     "ui": {
-        "window_title": "Фокус: сначала дела, потом Steam",
-        "heading": "Сначала важное — потом игры",
-        "intro": "Сегодняшний план:",
-        "date_line": "Сегодня: {date} · {weekday}",
-        "empty_schedule": "На сегодня задания не заданы. Добавь их в config/config.json.",
-        "study_button": "Сначала выполню задания",
+        "window_title": "Focus Guard", "heading": "План на сегодня",
+        "intro": "Мои задачи",
+        "empty_schedule": "Пока задач нет. Нажми «Добавить задачу», чтобы составить план.",
+        "add_task_button": "Добавить задачу", "study_button": "Начать фокус",
+        "pause_button": "Пауза", "resume_button": "Продолжить",
+        "check_button": "Проверить задачи", "reset_timer_button": "Сбросить таймер",
         "settings_button": "Настройки",
-        "reset_timer_button": "Сбросить таймер",
-        "reset_timer_title": "Сбросить учебный таймер?",
-        "reset_timer_message": "Прошедшее учебное время будет обнулено. Чтобы начать новую сессию, нажми «Сначала выполню задания». Продолжить?",
-        "timer_not_started": "Учебное время: 00:00:00 / {required} · сессия не начата",
-        "timer_study_display": "Учебное время: {elapsed} / {required} · осталось: {remaining}",
-        "timer_game_display": "Игровой таймер: {remaining}",
-        "check_button": "Проверить",
-        "check_no_session_title": "Учебная сессия не начата",
-        "check_no_session_message": "Сначала нажми «Сначала выполню задания». Норма на сегодня: {required}.",
-        "check_remaining_title": "Нужно ещё позаниматься",
-        "check_remaining_message": "Прошло: {elapsed}. До нормы {required} осталось: {remaining}.",
-        "check_complete_title": "Учебная норма выполнена",
-        "check_complete_message": "Засчитано учебного времени: {elapsed}. Дневная норма {required} выполнена. Полный доступ к Steam открыт.",
-        "temporary_button": "Временно поиграть",
-        "temporary_heading": "На сколько открыть Steam?",
-        "unlimited_button": "Без ограничения",
-        "thirty_minutes_button": "30 минут",
-        "back_button": "Назад",
-        "status_blocked": "Steam заблокирован до твоего решения.",
-        "status_study": "Режим учёбы: сначала выполни план, затем возвращайся.",
-        "status_timed": "Временный доступ активен. Осталось: {time_left}.",
-        "status_unlimited": "Steam открыт до закрытия игры.",
-        "study_started_title": "Учебная сессия отмечена",
-        "study_started_message": "Отметил начало занятий. Когда закончишь, снова открой Steam и нажми «Проверить».",
-        "time_warning_5": "Осталось 5 минут игры. Заверши текущий матч или сохранение.",
-        "time_warning_1": "Осталась 1 минута. Steam скоро будет закрыт.",
-        "time_finished_title": "Время вышло",
-        "time_finished_message": "Лимит в 30 минут закончился. Steam закрыт.",
-        "steam_not_found_title": "Не удалось найти Steam",
-        "steam_not_found_message": "Разрешение выдано, но путь к steam.exe не найден. Укажи его в config/config.json или запусти Steam вручную.",
-        "minimum_time_title": "Сначала нужно позаниматься",
-        "minimum_time_message": "С момента начала учебной сессии прошло {elapsed} мин. Для полного доступа нужно не менее {required} мин.",
-        "exit_title": "Остановить защиту?",
-        "exit_message": "Защитник Steam будет закрыт. Пока он не запущен, попытки открыть Steam не будут перехватываться. Продолжить?",
-        "already_running": "Защитник Steam уже запущен.",
-        "startup_installed": "Автозапуск добавлен. Защитник будет запускаться при входе в Windows.",
-        "startup_removed": "Автозапуск удалён.",
-        "stop_requested": "Команда остановки отправлена защитнику.",
-        "dependency_missing": "Не найден модуль psutil. Установи его командой: py -m pip install psutil",
-        "config_error_title": "Ошибка config/config.json",
-        "config_error_message": "Не удалось прочитать config/config.json. Используются встроенные настройки. Подробности: {error}",
-        "notification_title": "Фокус",
-        "close_button": "Закрыть окно",
-        "footer_hint": "Расписание и надписи можно изменить в окне «Настройки».",
+        "status_message": "Выбери одну задачу и сосредоточься на ней.",
+        "timer_not_started": "Фокус не запущен · план: {required}",
+        "timer_study_display": "Фокус: {elapsed} / {required} · осталось {remaining}",
+        "timer_paused_display": "Пауза · {elapsed} из {required}",
+        "check_no_tasks_title": "Нет задач с длительностью",
+        "check_no_tasks_message": "Добавь задачи и укажи для них время, чтобы проверить выполнение плана.",
+        "check_no_session_title": "Фокус ещё не начат",
+        "check_no_session_message": "Сначала нажми «Начать фокус». План на сегодня: {required}.",
+        "check_remaining_title": "План ещё не завершён",
+        "check_remaining_message": "Прошло {elapsed}. До запланированного времени осталось {remaining}.",
+        "check_complete_title": "План выполнен",
+        "check_complete_message": "Запланированное время достигнуто. Доступ к Steam открыт до закрытия игры.",
+        "reset_timer_title": "Сбросить таймер?",
+        "reset_timer_message": "Накопленное время текущей сессии будет обнулено.",
+        "exit_title": "Закрыть Focus Guard?",
+        "exit_message": "Защита будет остановлена. Продолжить?",
+        "config_error_title": "Ошибка настроек",
+        "config_error_message": "Не удалось прочитать конфигурацию: {error}",
+        "footer_hint": "Задачи, ограничения и поведение приложения настраиваются здесь.",
     },
     "schedule": {
-        "monday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: университетские задания — 45 минут",
-                "Дополнительно, если есть силы: базы данных и SQL — 30 минут",
-                "Минимум: английский — 10–15 минут"
-            ]
-        },
-        "tuesday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: Python — написать код или решить задачи, 45 минут",
-                "Дополнительно: ААС или другое задание университета — 30 минут",
-                "Минимум: повторить английские слова — 10–15 минут"
-            ]
-        },
-        "wednesday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: SQL — написать и проверить запросы, 45 минут",
-                "Дополнительно: Python — повторить пройденное, 30 минут",
-                "Минимум: английская грамматика или чтение — 10–15 минут"
-            ]
-        },
-        "thursday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: университетские задания и подготовка — 45 минут",
-                "Дополнительно: Python — практика, 30 минут",
-                "Минимум: английские слова — 10–15 минут"
-            ]
-        },
-        "friday": {
-            "required_study_minutes": 90,
-            "tasks": [
-                "Главное: закрыть срочные задания и проверить дедлайны — 45 минут",
-                "Дополнительно: повторить SQL или Python по слабым местам — 30 минут",
-                "Минимум: повторить английский за неделю — 10–15 минут"
-            ]
-        },
-        "saturday": {
-            "required_study_minutes": 60,
-            "tasks": [
-                "Гибкий день: выбрать одно самое важное или накопившееся задание — 45–60 минут",
-                "По желанию: английский или повторение материала — 10–15 минут"
-            ]
-        },
-        "sunday": {
-            "required_study_minutes": 0,
-            "tasks": [
-                "Отдых и восстановление",
-                "По желанию: составить план на следующую неделю — 10–15 минут"
-            ]
-        },
-        "special_dates": {}
-    }
+        "monday": {"tasks": []}, "tuesday": {"tasks": []}, "wednesday": {"tasks": []},
+        "thursday": {"tasks": []}, "friday": {"tasks": []}, "saturday": {"tasks": []},
+        "sunday": {"tasks": []}, "special_dates": {},
+    },
 }
-
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = dict(base)
@@ -142,21 +57,49 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
             result[key] = value
     return result
 
+def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade legacy text-only tasks without discarding user entries."""
+    schedule = config.get("schedule")
+    if isinstance(schedule, dict):
+        for day_data in schedule.values():
+            if isinstance(day_data, dict) and isinstance(day_data.get("tasks"), list):
+                old_tasks = day_data["tasks"]
+                day_data["tasks"] = normalize_tasks(old_tasks)
+                if any(isinstance(item, str) for item in old_tasks):
+                    day_data.pop("required_study_minutes", None)
+    rules = config.setdefault("rules", {})
+    if isinstance(rules, dict):
+        rules.setdefault("blocked_apps", [])
+        rules.setdefault("blocked_websites", [])
+        rules.setdefault("website_blocking_enabled", False)
+    app = config.setdefault("app", {})
+    if isinstance(app, dict):
+        app.setdefault("show_in_tray", True)
+        app.setdefault("start_with_windows", False)
+        app.setdefault("close_to_tray", True)
+    return config
 
 def load_config() -> tuple[dict[str, Any], str | None]:
     ensure_project_layout()
     if not CONFIG_PATH.exists():
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if DEFAULT_CONFIG_PATH.exists():
-            CONFIG_PATH.write_text(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8-sig"), encoding="utf-8")
-        else:
-            CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding="utf-8")
+        source = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8-sig") if DEFAULT_CONFIG_PATH.exists() else json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2)
+        CONFIG_PATH.write_text(source, encoding="utf-8")
     try:
         user_config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
         if not isinstance(user_config, dict):
             raise ValueError("Корневой элемент JSON должен быть объектом")
-        if isinstance(user_config.get("ui"), dict):
-            user_config["ui"].pop("all_done_button", None)
-        return deep_merge(DEFAULT_CONFIG, user_config), None
+        migrated = migrate_config(user_config)
+        merged = deep_merge(DEFAULT_CONFIG, migrated)
+        if merged != user_config:
+            save_config(merged)
+        return merged, None
     except Exception as exc:
         return deep_merge(DEFAULT_CONFIG, {}), str(exc)
+
+def save_config(config: dict[str, Any]) -> None:
+    ensure_project_layout()
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp = CONFIG_PATH.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(CONFIG_PATH)
