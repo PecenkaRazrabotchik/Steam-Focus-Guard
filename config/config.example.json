@@ -5,6 +5,8 @@
       "steam.exe"
     ],
     "scan_interval_ms": 400,
+    "close_grace_seconds": 8,
+    "launch_after_grant": true,
     "window_width": 1040,
     "window_height": 760,
     "always_on_top": false,
