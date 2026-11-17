@@ -22,7 +22,10 @@ from src.paths import STATE_PATH, STOP_REQUEST_PATH
 from src.scheduler import DAY_KEYS, DAY_NAMES, required_study_minutes_for_today, schedule_for_today
 from src.steam_utils import get_steam_executable
 from src.storage import log_event, save_json
-from src.task_manager import FOCUS_LEVELS, normalize_tasks, sort_tasks
+from src.task_manager import (
+    DEFAULT_CATEGORIES, FOCUS_LEVELS, PRIORITY_LEVELS, STATUS_LEVELS,
+    normalize_tasks, sort_tasks,
+)
 from src.tray import SystemTrayController
 from src.website_blocker import request_admin_sync
 
@@ -125,55 +128,97 @@ class SteamFocusGuard:
 
     def _build_ui(self) -> None:
         ctk = self.ctk
+        self.root.geometry("1280x880")
+        self.root.minsize(980, 720)
         shell = ctk.CTkFrame(self.root, fg_color="transparent")
-        shell.pack(fill="both", expand=True, padx=26, pady=22)
+        shell.pack(fill="both", expand=True, padx=32, pady=24)
 
+        # Header — title, description, date navigation and primary action.
         header = ctk.CTkFrame(shell, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 16))
-        heading = ctk.CTkFrame(header, fg_color="transparent")
-        heading.pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(heading, text="FOCUS GUARD", text_color=self.BLUE, font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(heading, text=self.t("heading"), text_color=self.TEXT, font=ctk.CTkFont(size=27, weight="bold")).pack(anchor="w", pady=(2, 2))
-        date_row = ctk.CTkFrame(heading, fg_color="transparent")
-        date_row.pack(anchor="w", pady=(2, 0))
-        self.previous_day_button = ctk.CTkButton(date_row, text="‹", width=28, height=26, corner_radius=8, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda: self.change_selected_day(-1))
+        header.pack(fill="x", pady=(0, 24))
+        title_box = ctk.CTkFrame(header, fg_color="transparent")
+        title_box.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(title_box, text="Task Manager", text_color="#F8FAFC", font=ctk.CTkFont(size=30, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(title_box, text="Организуй свои задачи и достигай целей", text_color="#9CA3AF", font=ctk.CTkFont(size=14)).pack(anchor="w", pady=(2, 8))
+        date_row = ctk.CTkFrame(title_box, fg_color="transparent")
+        date_row.pack(anchor="w")
+        self.previous_day_button = ctk.CTkButton(date_row, text="‹", width=27, height=25, corner_radius=7, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda: self.change_selected_day(-1))
         self.previous_day_button.pack(side="left", padx=(0, 6))
-        self.date_label = ctk.CTkLabel(date_row, text="", text_color=self.MUTED)
+        self.date_label = ctk.CTkLabel(date_row, text="", text_color="#94A3B8", font=ctk.CTkFont(size=11))
         self.date_label.pack(side="left")
-        self.next_day_button = ctk.CTkButton(date_row, text="›", width=28, height=26, corner_radius=8, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda: self.change_selected_day(1))
+        self.next_day_button = ctk.CTkButton(date_row, text="›", width=27, height=25, corner_radius=7, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda: self.change_selected_day(1))
         self.next_day_button.pack(side="left", padx=(6, 0))
-        self.settings_button = ctk.CTkButton(header, text="⚙  Настройки", width=142, height=40, corner_radius=12, fg_color=self.PANEL_LIGHT, hover_color="#334155", command=self.open_settings)
-        self.settings_button.pack(side="right", padx=(12, 0), pady=(16, 0))
-
-        timer_card = ctk.CTkFrame(shell, fg_color=self.PANEL, corner_radius=18)
-        timer_card.pack(fill="x", pady=(0, 12))
-        ctk.CTkLabel(timer_card, text="ВРЕМЯ ФОКУСА", text_color=self.MUTED, font=ctk.CTkFont(size=10, weight="bold")).pack(anchor="w", padx=20, pady=(14, 2))
-        self.timer_label = ctk.CTkLabel(timer_card, text="", text_color=self.TEXT, font=ctk.CTkFont(size=23, weight="bold"))
-        self.timer_label.pack(anchor="w", padx=20, pady=(0, 12))
-        self.status_label = ctk.CTkLabel(timer_card, text=self.t("status_message"), text_color="#C4CDD9", font=ctk.CTkFont(size=12), anchor="w", justify="left", wraplength=880)
-        self.status_label.pack(fill="x", padx=20, pady=(0, 15))
-
-        task_header = ctk.CTkFrame(shell, fg_color="transparent")
-        task_header.pack(fill="x", pady=(10, 10))
-        ctk.CTkLabel(task_header, text=self.t("intro"), text_color=self.TEXT, font=ctk.CTkFont(size=18, weight="bold")).pack(side="left")
-        self.add_task_button = ctk.CTkButton(task_header, text="+  Добавить задачу", width=155, height=38, corner_radius=11, command=self.open_task_dialog)
+        header_actions = ctk.CTkFrame(header, fg_color="transparent")
+        header_actions.pack(side="right", anchor="n", pady=(7, 0))
+        self.settings_button = ctk.CTkButton(header_actions, text="⚙", width=42, height=42, corner_radius=12, fg_color=self.PANEL_LIGHT, hover_color="#334155", command=self.open_settings)
+        self.settings_button.pack(side="right", padx=(9, 0))
+        self.add_task_button = ctk.CTkButton(header_actions, text="+  Новая задача", width=158, height=42, corner_radius=12, fg_color="#0891B2", hover_color="#2563EB", font=ctk.CTkFont(size=13, weight="bold"), command=self.open_task_dialog)
         self.add_task_button.pack(side="right")
+
+        # Four dashboard metrics inspired by the reference design.
+        stats = ctk.CTkFrame(shell, fg_color="transparent")
+        stats.pack(fill="x", pady=(0, 18))
+        for column in range(4):
+            stats.grid_columnconfigure(column, weight=1, uniform="metric")
+        self.metric_values = {}
+        metric_specs = (
+            ("total", "Всего задач", "#3B82F6", "▦"),
+            ("completed", "Выполнено", "#10B981", "✓"),
+            ("progress", "В работе", "#F59E0B", "◷"),
+            ("urgent", "Срочные", "#EF4444", "↗"),
+        )
+        for column, (key, label, color, symbol) in enumerate(metric_specs):
+            card = ctk.CTkFrame(stats, fg_color="#151E30", border_width=1, border_color="#253149", corner_radius=15, height=104)
+            card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 10, 0 if column == 3 else 10))
+            card.grid_propagate(False)
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=18, pady=(14, 3))
+            ctk.CTkLabel(top, text=label, text_color="#8D98AB", font=ctk.CTkFont(size=11)).pack(side="left")
+            ctk.CTkLabel(top, text=symbol, text_color=color, fg_color="#202B43", corner_radius=9, width=31, height=31, font=ctk.CTkFont(size=17, weight="bold")).pack(side="right")
+            value = ctk.CTkLabel(card, text="0", text_color="#F8FAFC", font=ctk.CTkFont(size=25, weight="bold"))
+            value.pack(anchor="w", padx=18, pady=(0, 8))
+            self.metric_values[key] = value
+
+        # Compact focus timer keeps existing pause/check/reset features without dominating the task board.
+        focus_bar = ctk.CTkFrame(shell, fg_color="#151E30", border_width=1, border_color="#253149", corner_radius=14)
+        focus_bar.pack(fill="x", pady=(0, 16))
+        self.timer_label = ctk.CTkLabel(focus_bar, text="", text_color="#F8FAFC", font=ctk.CTkFont(size=14, weight="bold"), anchor="w")
+        self.timer_label.pack(side="left", padx=16, pady=12, fill="x", expand=True)
+        self.status_label = ctk.CTkLabel(focus_bar, text=self.t("status_message"), text_color="#94A3B8", font=ctk.CTkFont(size=10), anchor="e")
+        self.status_label.pack(side="left", padx=8)
+        self.start_button = ctk.CTkButton(focus_bar, text=self.t("study_button"), height=34, width=115, corner_radius=9, fg_color="#2563EB", hover_color="#1D4ED8", command=self.mark_study_started)
+        self.start_button.pack(side="right", padx=(5, 12), pady=8)
+        self.pause_button = ctk.CTkButton(focus_bar, text=self.t("pause_button"), height=34, width=92, corner_radius=9, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=self.toggle_study_pause)
+        self.pause_button.pack(side="right", padx=4, pady=8)
+        self.check_button = ctk.CTkButton(focus_bar, text=self.t("check_button"), height=34, width=120, corner_radius=9, fg_color="#166534", hover_color="#15803D", command=self.check_study_time)
+        self.check_button.pack(side="right", padx=4, pady=8)
+        self.reset_timer_button = ctk.CTkButton(focus_bar, text="↺", height=34, width=38, corner_radius=9, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=self.reset_study_timer)
+        self.reset_timer_button.pack(side="right", padx=4, pady=8)
+
+        # Search and filters.
+        filter_panel = ctk.CTkFrame(shell, fg_color="#151E30", border_width=1, border_color="#29354A", corner_radius=15)
+        filter_panel.pack(fill="x", pady=(0, 18))
+        filter_row = ctk.CTkFrame(filter_panel, fg_color="transparent")
+        filter_row.pack(fill="x", padx=14, pady=12)
+        self.search_var = ctk.StringVar()
+        self.search_entry = ctk.CTkEntry(filter_row, textvariable=self.search_var, height=42, corner_radius=10, border_color="#354258", fg_color="#1B2639", placeholder_text="⌕  Поиск задач...")
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.search_entry.bind("<KeyRelease>", lambda _event: self._refresh_ui())
+        self.status_filter_var = ctk.StringVar(value="Все статусы")
+        self.priority_filter_var = ctk.StringVar(value="Все приоритеты")
+        self.category_filter_var = ctk.StringVar(value="Все категории")
+        self.status_filter = ctk.CTkOptionMenu(filter_row, variable=self.status_filter_var, values=["Все статусы"] + [meta["label"] for meta in STATUS_LEVELS.values()], width=142, height=42, corner_radius=10, fg_color="#202B3E", button_color="#2D3A50", button_hover_color="#3A4961", command=lambda _value: self._refresh_ui())
+        self.status_filter.pack(side="left", padx=4)
+        self.priority_filter = ctk.CTkOptionMenu(filter_row, variable=self.priority_filter_var, values=["Все приоритеты"] + [meta["label"] for meta in PRIORITY_LEVELS.values()], width=154, height=42, corner_radius=10, fg_color="#202B3E", button_color="#2D3A50", button_hover_color="#3A4961", command=lambda _value: self._refresh_ui())
+        self.priority_filter.pack(side="left", padx=4)
+        self.category_filter = ctk.CTkOptionMenu(filter_row, variable=self.category_filter_var, values=["Все категории"] + list(DEFAULT_CATEGORIES), width=145, height=42, corner_radius=10, fg_color="#202B3E", button_color="#2D3A50", button_hover_color="#3A4961", command=lambda _value: self._refresh_ui())
+        self.category_filter.pack(side="left", padx=(4, 0))
 
         self.task_list_frame = ctk.CTkScrollableFrame(shell, fg_color="transparent", corner_radius=14)
         self.task_list_frame.pack(fill="both", expand=True)
-
-        actions = ctk.CTkFrame(shell, fg_color="transparent")
-        actions.pack(fill="x", pady=(16, 0))
-        self.start_button = ctk.CTkButton(actions, text=self.t("study_button"), height=44, corner_radius=12, fg_color=self.BLUE, hover_color="#2563EB", command=self.mark_study_started)
-        self.start_button.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        self.pause_button = ctk.CTkButton(actions, text=self.t("pause_button"), height=44, width=112, corner_radius=12, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=self.toggle_study_pause)
-        self.pause_button.pack(side="left", padx=4)
-        self.check_button = ctk.CTkButton(actions, text=self.t("check_button"), height=44, width=155, corner_radius=12, fg_color="#166534", hover_color="#15803D", command=self.check_study_time)
-        self.check_button.pack(side="left", padx=4)
-        self.reset_timer_button = ctk.CTkButton(actions, text=self.t("reset_timer_button"), height=44, width=145, corner_radius=12, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=self.reset_study_timer)
-        self.reset_timer_button.pack(side="left", padx=(8, 0))
-
-        ctk.CTkLabel(shell, text=self.t("footer_hint"), text_color="#6B7280", font=ctk.CTkFont(size=10)).pack(anchor="w", pady=(12, 0))
+        for column in range(3):
+            self.task_list_frame.grid_columnconfigure(column, weight=1, uniform="task-card")
+        ctk.CTkLabel(shell, text=self.t("footer_hint"), text_color="#68758B", font=ctk.CTkFont(size=10)).pack(anchor="w", pady=(12, 0))
 
     def _slot_for_date(self, selected_date) -> dict[str, Any]:
         schedule = self.config.setdefault("schedule", {})
@@ -207,53 +252,80 @@ class SteamFocusGuard:
         ctk = self.ctk
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("Новая задача" if task is None else "Изменить задачу")
-        dialog.geometry("640x430")
+        dialog.geometry("690x610")
+        dialog.minsize(640, 570)
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
-        selected = {"focus": (task or {}).get("focus", "main")}
-        ctk.CTkLabel(dialog, text="На чём будет фокус?", font=ctk.CTkFont(size=21, weight="bold")).pack(anchor="w", padx=24, pady=(22, 6))
-        ctk.CTkLabel(dialog, text="Приоритет определяет порядок задач в общем списке.", text_color=self.MUTED).pack(anchor="w", padx=24, pady=(0, 14))
-        choices = ctk.CTkFrame(dialog, fg_color="transparent")
-        choices.pack(fill="x", padx=20)
-        form = ctk.CTkFrame(dialog, fg_color=self.PANEL, corner_radius=14)
-        form.pack(fill="x", padx=24, pady=22)
-        badge = ctk.CTkLabel(form, text="", width=150, height=38, corner_radius=10, text_color="#111827", font=ctk.CTkFont(weight="bold"))
-        badge.pack(side="left", padx=14, pady=18)
-        entry = ctk.CTkEntry(form, height=42, placeholder_text="Название или описание задачи", corner_radius=10)
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 14), pady=18)
-        entry.insert(0, (task or {}).get("text", ""))
+        selected_focus = {"value": (task or {}).get("focus", "main")}
+        ctk.CTkLabel(dialog, text="Новая задача" if task is None else "Редактирование задачи", font=ctk.CTkFont(size=23, weight="bold")).pack(anchor="w", padx=26, pady=(22, 4))
+        ctk.CTkLabel(dialog, text="Опиши задачу, выбери фокус и настрой детали.", text_color=self.MUTED).pack(anchor="w", padx=26, pady=(0, 18))
+
+        focus_panel = ctk.CTkFrame(dialog, fg_color=self.PANEL, corner_radius=13)
+        focus_panel.pack(fill="x", padx=24, pady=(0, 14))
+        ctk.CTkLabel(focus_panel, text="ФОКУС", text_color=self.MUTED, font=ctk.CTkFont(size=10, weight="bold")).pack(anchor="w", padx=14, pady=(12, 7))
+        focus_row = ctk.CTkFrame(focus_panel, fg_color="transparent")
+        focus_row.pack(fill="x", padx=10, pady=(0, 12))
+        focus_badge = ctk.CTkLabel(focus_row, text="", width=132, height=37, corner_radius=9, text_color="#111827", font=ctk.CTkFont(size=11, weight="bold"))
+        focus_badge.pack(side="left", padx=4)
+        focus_buttons = {}
         def select_focus(level: str) -> None:
-            selected["focus"] = level
+            selected_focus["value"] = level
             meta = FOCUS_LEVELS[level]
-            badge.configure(text=meta["label"], fg_color=meta["color"])
+            focus_badge.configure(text=meta["label"], fg_color=meta["color"])
             for key, button in focus_buttons.items():
                 button.configure(border_width=2 if key == level else 0, border_color=meta["color"] if key == level else self.PANEL_LIGHT)
-        focus_buttons = {}
         for level in ("main", "additional", "later"):
             meta = FOCUS_LEVELS[level]
-            button = ctk.CTkButton(choices, text=meta["label"], fg_color=meta["color"], text_color="#111827", hover_color=meta["color"], height=38, corner_radius=10, command=lambda value=level: select_focus(value))
+            button = ctk.CTkButton(focus_row, text=meta["label"], height=37, corner_radius=9, fg_color="#263449", hover_color="#334155", text_color=meta["color"], command=lambda value=level: select_focus(value))
             button.pack(side="left", fill="x", expand=True, padx=4)
             focus_buttons[level] = button
+        select_focus(selected_focus["value"])
 
-        select_focus(selected["focus"])
+        form = ctk.CTkFrame(dialog, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=26)
+        ctk.CTkLabel(form, text="Название задачи", text_color="#CBD5E1", font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", pady=(3, 6))
+        entry = ctk.CTkEntry(form, height=42, corner_radius=10, placeholder_text="Например: Подготовить проектное предложение")
+        entry.pack(fill="x")
+        entry.insert(0, (task or {}).get("text", ""))
 
-        timing = ctk.CTkFrame(dialog, fg_color="transparent")
-        timing.pack(fill="x", padx=24)
-        ctk.CTkLabel(timing, text="Время на задачу", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        hour = ctk.CTkEntry(timing, width=76, height=38, placeholder_text="ч")
-        hour.pack(side="right", padx=(8, 0))
-        minute = ctk.CTkEntry(timing, width=76, height=38, placeholder_text="мин")
-        minute.pack(side="right", padx=(8, 0))
+        metadata = ctk.CTkFrame(form, fg_color="transparent")
+        metadata.pack(fill="x", pady=(15, 0))
+        for column in range(3):
+            metadata.grid_columnconfigure(column, weight=1)
+        status_label_to_key = {meta["label"]: key for key, meta in STATUS_LEVELS.items()}
+        priority_label_to_key = {meta["label"]: key for key, meta in PRIORITY_LEVELS.items()}
+        current_status = (task or {}).get("status", "todo")
+        current_priority = (task or {}).get("priority", "medium")
+        status_var = ctk.StringVar(value=STATUS_LEVELS.get(current_status, STATUS_LEVELS["todo"])["label"])
+        priority_var = ctk.StringVar(value=PRIORITY_LEVELS.get(current_priority, PRIORITY_LEVELS["medium"])["label"])
+        category_var = ctk.StringVar(value=(task or {}).get("category", "Учёба"))
+        ctk.CTkLabel(metadata, text="Статус", text_color=self.MUTED).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 5))
+        ctk.CTkLabel(metadata, text="Приоритет", text_color=self.MUTED).grid(row=0, column=1, sticky="w", padx=8, pady=(0, 5))
+        ctk.CTkLabel(metadata, text="Категория", text_color=self.MUTED).grid(row=0, column=2, sticky="w", padx=(8, 0), pady=(0, 5))
+        status_menu = ctk.CTkOptionMenu(metadata, variable=status_var, values=list(status_label_to_key), height=38, corner_radius=9, fg_color="#263449", button_color="#334155", button_hover_color="#475569")
+        status_menu.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        priority_menu = ctk.CTkOptionMenu(metadata, variable=priority_var, values=list(priority_label_to_key), height=38, corner_radius=9, fg_color="#263449", button_color="#334155", button_hover_color="#475569")
+        priority_menu.grid(row=1, column=1, sticky="ew", padx=8)
+        category_entry = ctk.CTkEntry(metadata, textvariable=category_var, height=38, corner_radius=9, placeholder_text="Своя категория")
+        category_entry.grid(row=1, column=2, sticky="ew", padx=(8, 0))
+
+        ctk.CTkLabel(form, text="Планируемое время", text_color="#CBD5E1", font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", pady=(17, 6))
+        timing = ctk.CTkFrame(form, fg_color="transparent")
+        timing.pack(fill="x")
+        hour = ctk.CTkEntry(timing, width=90, height=38, corner_radius=9, placeholder_text="Часы")
+        hour.pack(side="left", padx=(0, 8))
+        minute = ctk.CTkEntry(timing, width=90, height=38, corner_radius=9, placeholder_text="Минуты")
+        minute.pack(side="left")
         duration = int((task or {}).get("duration_minutes", 0))
         hour.insert(0, str(duration // 60))
         minute.insert(0, str(duration % 60))
+        error = ctk.CTkLabel(form, text="", text_color="#F87171", anchor="w")
+        error.pack(fill="x", pady=(8, 0))
 
-        error = ctk.CTkLabel(dialog, text="", text_color="#F87171")
-        error.pack(anchor="w", padx=26, pady=(8, 0))
         footer = ctk.CTkFrame(dialog, fg_color="transparent")
-        footer.pack(fill="x", padx=24, pady=16)
-        ctk.CTkButton(footer, text="Отмена", width=110, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        footer.pack(fill="x", padx=24, pady=18)
+        ctk.CTkButton(footer, text="Отмена", width=110, height=40, corner_radius=9, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=dialog.destroy).pack(side="right", padx=(8, 0))
         def save_task():
             title = entry.get().strip()
             try:
@@ -267,15 +339,24 @@ class SteamFocusGuard:
             if not title:
                 error.configure(text="Введи название задачи.")
                 return
-            new_task = {"id": (task or {}).get("id", uuid.uuid4().hex), "focus": selected["focus"], "text": title, "duration_minutes": hours * 60 + minutes}
+            category = category_var.get().strip() or "Другое"
+            new_task = {
+                "id": (task or {}).get("id", uuid.uuid4().hex),
+                "focus": selected_focus["value"],
+                "text": title,
+                "duration_minutes": hours * 60 + minutes,
+                "status": status_label_to_key[status_var.get()],
+                "priority": priority_label_to_key[priority_var.get()],
+                "category": category,
+            }
             current = self._selected_tasks()
             if task is not None:
                 current = [item for item in current if item["id"] != task["id"]]
             current.append(new_task)
             self._write_selected_tasks(current)
-            log_event("task_saved", f"{selected['focus']}: {title}")
+            log_event("task_saved", f"{selected_focus['value']}/{new_task['priority']}/{new_task['status']}: {title}")
             dialog.destroy()
-        ctk.CTkButton(footer, text="Сохранить задачу", width=160, command=save_task).pack(side="right")
+        ctk.CTkButton(footer, text="Сохранить задачу", width=160, height=40, corner_radius=9, fg_color="#0891B2", hover_color="#2563EB", command=save_task).pack(side="right")
         entry.focus_set()
 
     def open_task_dialog(self) -> None:
@@ -296,26 +377,58 @@ class SteamFocusGuard:
             child.destroy()
         self.status_label.configure(text=self.t("status_message"))
         tasks = self._selected_tasks()
-        if not tasks:
-            empty = ctk.CTkFrame(self.task_list_frame, fg_color=self.PANEL, corner_radius=16)
-            empty.pack(fill="x", padx=4, pady=8)
-            ctk.CTkLabel(empty, text="Пока задач нет", text_color=self.TEXT, font=ctk.CTkFont(size=17, weight="bold")).pack(pady=(22, 5))
-            ctk.CTkLabel(empty, text=self.t("empty_schedule"), text_color=self.MUTED).pack(pady=(0, 22))
+
+        # Update metrics before filtering so they always describe the full selected-day list.
+        counts = {
+            "total": len(tasks),
+            "completed": sum(task.get("status") == "done" for task in tasks),
+            "progress": sum(task.get("status") == "in_progress" for task in tasks),
+            "urgent": sum(task.get("priority") == "urgent" and task.get("status") != "done" for task in tasks),
+        }
+        for key, value in counts.items():
+            self.metric_values[key].configure(text=str(value))
+
+        # Refresh category choices while retaining a valid current selection.
+        categories = sorted({str(task.get("category", "Другое")) for task in tasks}, key=str.casefold)
+        category_values = ["Все категории"] + categories
+        current_category = self.category_filter_var.get()
+        self.category_filter.configure(values=category_values)
+        if current_category not in category_values:
+            self.category_filter_var.set("Все категории")
+
+        search = self.search_var.get().strip().casefold()
+        status_filter = self.status_filter_var.get()
+        priority_filter = self.priority_filter_var.get()
+        category_filter = self.category_filter_var.get()
+        status_lookup = {meta["label"]: key for key, meta in STATUS_LEVELS.items()}
+        priority_lookup = {meta["label"]: key for key, meta in PRIORITY_LEVELS.items()}
+        visible = []
         for task in tasks:
-            meta = FOCUS_LEVELS[task["focus"]]
-            card = ctk.CTkFrame(self.task_list_frame, fg_color=self.PANEL, corner_radius=14)
-            card.pack(fill="x", padx=4, pady=5)
-            ctk.CTkLabel(card, text=meta["label"], fg_color=meta["color"], text_color="#111827", corner_radius=9, width=132, height=32, font=ctk.CTkFont(size=11, weight="bold")).pack(side="left", padx=14, pady=13)
-            body = ctk.CTkFrame(card, fg_color="transparent")
-            body.pack(side="left", fill="both", expand=True, padx=(2, 8), pady=10)
-            ctk.CTkLabel(body, text=task["text"], text_color=self.TEXT, font=ctk.CTkFont(size=13, weight="bold"), anchor="w", justify="left", wraplength=500).pack(anchor="w")
-            duration = int(task["duration_minutes"])
-            duration_text = f"{duration // 60} ч {duration % 60} мин" if duration >= 60 else f"{duration} мин" if duration else "Без таймера"
-            ctk.CTkLabel(body, text=duration_text, text_color=self.MUTED, font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(3, 0))
-            buttons = ctk.CTkFrame(card, fg_color="transparent")
-            buttons.pack(side="right", padx=10)
-            ctk.CTkButton(buttons, text="Изменить", width=76, height=30, corner_radius=8, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda t=task: self._edit_task(t)).pack(pady=3)
-            ctk.CTkButton(buttons, text="Удалить", width=76, height=30, corner_radius=8, fg_color="#7F1D1D", hover_color="#991B1B", command=lambda t=task: self._delete_task(t)).pack(pady=3)
+            if search and search not in task["text"].casefold() and search not in task.get("category", "").casefold():
+                continue
+            if status_filter != "Все статусы" and task.get("status") != status_lookup.get(status_filter):
+                continue
+            if priority_filter != "Все приоритеты" and task.get("priority") != priority_lookup.get(priority_filter):
+                continue
+            if category_filter != "Все категории" and task.get("category") != category_filter:
+                continue
+            visible.append(task)
+
+        if not tasks:
+            empty = ctk.CTkFrame(self.task_list_frame, fg_color="#151E30", border_width=1, border_color="#29354A", corner_radius=16)
+            empty.grid(row=0, column=0, columnspan=3, sticky="ew", padx=4, pady=8)
+            ctk.CTkLabel(empty, text="Пока задач нет", text_color=self.TEXT, font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(28, 5))
+            ctk.CTkLabel(empty, text="Нажми «Новая задача», чтобы добавить первое дело.", text_color=self.MUTED).pack(pady=(0, 28))
+        elif not visible:
+            empty = ctk.CTkFrame(self.task_list_frame, fg_color="#151E30", border_width=1, border_color="#29354A", corner_radius=16)
+            empty.grid(row=0, column=0, columnspan=3, sticky="ew", padx=4, pady=8)
+            ctk.CTkLabel(empty, text="Задачи не найдены", text_color=self.TEXT, font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(24, 4))
+            ctk.CTkLabel(empty, text="Измени поисковый запрос или параметры фильтрации.", text_color=self.MUTED).pack(pady=(0, 24))
+
+        for index, task in enumerate(visible):
+            row, column = divmod(index, 3)
+            self._render_task_card(task, row, column)
+
         selected_name = DAY_NAMES[self.selected_date.weekday()].capitalize()
         self.date_label.configure(text=f"{self.selected_date.strftime('%d.%m.%Y')} · {selected_name}")
         today = datetime.now().date()
@@ -324,7 +437,47 @@ class SteamFocusGuard:
         self.pause_button.configure(state="normal" if controls_enabled and self.study_date == today.isoformat() else "disabled")
         self.check_button.configure(state="normal" if controls_enabled else "disabled")
         self.reset_timer_button.configure(state="normal" if controls_enabled and self.mode != "unlimited" else "disabled")
-        self.root.title(f"Focus Guard · {selected_name}")
+        self.root.title(f"Task Manager · {selected_name}")
+
+    def _render_task_card(self, task: dict[str, Any], row: int, column: int) -> None:
+        ctk = self.ctk
+        focus_meta = FOCUS_LEVELS[task.get("focus", "later")]
+        status_meta = STATUS_LEVELS.get(task.get("status"), STATUS_LEVELS["todo"])
+        priority_meta = PRIORITY_LEVELS.get(task.get("priority"), PRIORITY_LEVELS["medium"])
+        card = ctk.CTkFrame(self.task_list_frame, fg_color="#182235", border_width=1, border_color="#2A354B", corner_radius=14)
+        card.grid(row=row, column=column, sticky="nsew", padx=5, pady=6)
+        accent = ctk.CTkFrame(card, width=4, corner_radius=0, fg_color=priority_meta["color"])
+        accent.pack(side="left", fill="y", padx=(0, 11))
+        content = ctk.CTkFrame(card, fg_color="transparent")
+        content.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=12)
+        header = ctk.CTkFrame(content, fg_color="transparent")
+        header.pack(fill="x")
+        title_font = ctk.CTkFont(size=14, weight="bold", overstrike=task.get("status") == "done")
+        ctk.CTkLabel(header, text=task["text"], text_color="#E5E7EB" if task.get("status") != "done" else "#8B95A6", font=title_font, anchor="w", justify="left", wraplength=310).pack(side="left", fill="x", expand=True)
+        actions = ctk.CTkFrame(header, fg_color="transparent")
+        actions.pack(side="right", padx=(4, 0))
+        ctk.CTkButton(actions, text="✎", width=27, height=25, corner_radius=7, fg_color="#263449", hover_color="#3A4961", command=lambda t=task: self._edit_task(t)).pack(side="left", padx=2)
+        ctk.CTkButton(actions, text="×", width=27, height=25, corner_radius=7, fg_color="#3B2630", hover_color="#65303D", text_color="#FCA5A5", command=lambda t=task: self._delete_task(t)).pack(side="left", padx=2)
+
+        tags = ctk.CTkFrame(content, fg_color="transparent")
+        tags.pack(fill="x", pady=(10, 8))
+        badges = (
+            (focus_meta["label"], focus_meta["color"]),
+            (status_meta["label"], status_meta["color"]),
+            (priority_meta["label"], priority_meta["color"]),
+            (task.get("category", "Другое"), "#A78BFA"),
+        )
+        for label, color in badges:
+            chip = ctk.CTkLabel(tags, text=label, text_color=color, fg_color="#222E43", corner_radius=8, font=ctk.CTkFont(size=9, weight="bold"), padx=7, pady=4)
+            chip.pack(side="left", padx=(0, 5))
+        duration = int(task.get("duration_minutes", 0))
+        if duration >= 60:
+            duration_text = f"{duration // 60} ч" + (f" {duration % 60} мин" if duration % 60 else "")
+        else:
+            duration_text = f"{duration} мин"
+        duration_row = ctk.CTkFrame(content, fg_color="transparent")
+        duration_row.pack(fill="x")
+        ctk.CTkLabel(duration_row, text=f"◷  {duration_text if duration else 'Без таймера'}", text_color="#9CA3AF", font=ctk.CTkFont(size=11)).pack(side="left")
 
     def open_settings(self) -> None:
         if self._settings_window is not None:
