@@ -6,7 +6,7 @@ import os
 import subprocess
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,7 @@ class SteamFocusGuard:
         self.running = True
         self.background = background
         self.detected_steam_path: str | None = None
+        self.selected_date = datetime.now().date()
         self.mode = "blocked"
         self._steam_seen = False
         self._steam_missing_since: float | None = None
@@ -133,8 +134,14 @@ class SteamFocusGuard:
         heading.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(heading, text="FOCUS GUARD", text_color=self.BLUE, font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w")
         ctk.CTkLabel(heading, text=self.t("heading"), text_color=self.TEXT, font=ctk.CTkFont(size=27, weight="bold")).pack(anchor="w", pady=(2, 2))
-        day_name, _ = schedule_for_today(self.config)
-        ctk.CTkLabel(heading, text=f"{datetime.now().strftime('%d.%m.%Y')}  ·  {day_name.capitalize()}", text_color=self.MUTED).pack(anchor="w")
+        date_row = ctk.CTkFrame(heading, fg_color="transparent")
+        date_row.pack(anchor="w", pady=(2, 0))
+        self.previous_day_button = ctk.CTkButton(date_row, text="‹", width=28, height=26, corner_radius=8, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda: self.change_selected_day(-1))
+        self.previous_day_button.pack(side="left", padx=(0, 6))
+        self.date_label = ctk.CTkLabel(date_row, text="", text_color=self.MUTED)
+        self.date_label.pack(side="left")
+        self.next_day_button = ctk.CTkButton(date_row, text="›", width=28, height=26, corner_radius=8, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda: self.change_selected_day(1))
+        self.next_day_button.pack(side="left", padx=(6, 0))
         self.settings_button = ctk.CTkButton(header, text="⚙  Настройки", width=142, height=40, corner_radius=12, fg_color=self.PANEL_LIGHT, hover_color="#334155", command=self.open_settings)
         self.settings_button.pack(side="right", padx=(12, 0), pady=(16, 0))
 
@@ -168,21 +175,31 @@ class SteamFocusGuard:
 
         ctk.CTkLabel(shell, text=self.t("footer_hint"), text_color="#6B7280", font=ctk.CTkFont(size=10)).pack(anchor="w", pady=(12, 0))
 
-    def _today_slot(self) -> dict[str, Any]:
+    def _slot_for_date(self, selected_date) -> dict[str, Any]:
         schedule = self.config.setdefault("schedule", {})
         special_dates = schedule.setdefault("special_dates", {})
-        today_key = datetime.now().date().isoformat()
-        if today_key in special_dates and isinstance(special_dates[today_key], dict):
-            return special_dates[today_key]
-        return schedule.setdefault(DAY_KEYS[datetime.now().weekday()], {"tasks": []})
+        date_key = selected_date.isoformat()
+        if date_key in special_dates and isinstance(special_dates[date_key], dict):
+            return special_dates[date_key]
+        return schedule.setdefault(DAY_KEYS[selected_date.weekday()], {"tasks": []})
+
+    def _today_slot(self) -> dict[str, Any]:
+        return self._slot_for_date(datetime.now().date())
+
+    def _selected_tasks(self) -> list[dict[str, Any]]:
+        return normalize_tasks(self._slot_for_date(self.selected_date).get("tasks", []))
 
     def _today_tasks(self) -> list[dict[str, Any]]:
         return normalize_tasks(self._today_slot().get("tasks", []))
 
-    def _write_today_tasks(self, tasks: list[dict[str, Any]]) -> None:
-        slot = self._today_slot()
-        slot["tasks"] = sort_tasks(tasks)
+    def _write_selected_tasks(self, tasks: list[dict[str, Any]]) -> None:
+        self._slot_for_date(self.selected_date)["tasks"] = sort_tasks(tasks)
         save_config(self.config)
+        self._refresh_ui()
+        self._update_timer_display(schedule_next=False)
+
+    def change_selected_day(self, delta: int) -> None:
+        self.selected_date += timedelta(days=delta)
         self._refresh_ui()
         self._update_timer_display(schedule_next=False)
 
@@ -251,11 +268,11 @@ class SteamFocusGuard:
                 error.configure(text="Введи название задачи.")
                 return
             new_task = {"id": (task or {}).get("id", uuid.uuid4().hex), "focus": selected["focus"], "text": title, "duration_minutes": hours * 60 + minutes}
-            current = self._today_tasks()
+            current = self._selected_tasks()
             if task is not None:
                 current = [item for item in current if item["id"] != task["id"]]
             current.append(new_task)
-            self._write_today_tasks(current)
+            self._write_selected_tasks(current)
             log_event("task_saved", f"{selected['focus']}: {title}")
             dialog.destroy()
         ctk.CTkButton(footer, text="Сохранить задачу", width=160, command=save_task).pack(side="right")
@@ -270,7 +287,7 @@ class SteamFocusGuard:
     def _delete_task(self, task: dict[str, Any]) -> None:
         if not messagebox.askyesno("Удалить задачу", f"Удалить задачу «{task['text']}»?", parent=self.root):
             return
-        self._write_today_tasks([item for item in self._today_tasks() if item["id"] != task["id"]])
+        self._write_selected_tasks([item for item in self._selected_tasks() if item["id"] != task["id"]])
         log_event("task_deleted", task["text"])
 
     def _refresh_ui(self) -> None:
@@ -278,7 +295,7 @@ class SteamFocusGuard:
         for child in self.task_list_frame.winfo_children():
             child.destroy()
         self.status_label.configure(text=self.t("status_message"))
-        tasks = self._today_tasks()
+        tasks = self._selected_tasks()
         if not tasks:
             empty = ctk.CTkFrame(self.task_list_frame, fg_color=self.PANEL, corner_radius=16)
             empty.pack(fill="x", padx=4, pady=8)
@@ -299,8 +316,15 @@ class SteamFocusGuard:
             buttons.pack(side="right", padx=10)
             ctk.CTkButton(buttons, text="Изменить", width=76, height=30, corner_radius=8, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda t=task: self._edit_task(t)).pack(pady=3)
             ctk.CTkButton(buttons, text="Удалить", width=76, height=30, corner_radius=8, fg_color="#7F1D1D", hover_color="#991B1B", command=lambda t=task: self._delete_task(t)).pack(pady=3)
-        today_name = DAY_NAMES[datetime.now().weekday()].capitalize()
-        self.root.title(f"Focus Guard · {today_name}")
+        selected_name = DAY_NAMES[self.selected_date.weekday()].capitalize()
+        self.date_label.configure(text=f"{self.selected_date.strftime('%d.%m.%Y')} · {selected_name}")
+        today = datetime.now().date()
+        controls_enabled = self.selected_date == today
+        self.start_button.configure(state="normal" if controls_enabled else "disabled")
+        self.pause_button.configure(state="normal" if controls_enabled and self.study_date == today.isoformat() else "disabled")
+        self.check_button.configure(state="normal" if controls_enabled else "disabled")
+        self.reset_timer_button.configure(state="normal" if controls_enabled and self.mode != "unlimited" else "disabled")
+        self.root.title(f"Focus Guard · {selected_name}")
 
     def open_settings(self) -> None:
         if self._settings_window is not None:
@@ -431,6 +455,11 @@ class SteamFocusGuard:
 
     def _update_timer_display(self, schedule_next: bool = True) -> None:
         if not self.running:
+            return
+        if self.selected_date != datetime.now().date():
+            self.timer_label.configure(text="Таймер фокуса доступен только для текущего дня.")
+            if schedule_next:
+                self.root.after(1000, self._update_timer_display)
             return
         required = required_study_minutes_for_today(self.config) * 60
         elapsed = self._study_elapsed_seconds()
