@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - refactor/settings-ui
+      - app-redesign
   pull_request:
     branches:
       - main
