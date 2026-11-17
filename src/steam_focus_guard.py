@@ -342,7 +342,11 @@ class SteamFocusGuard:
                     lambda: self.root.after(0, self.toggle_study_pause),
                     lambda: self.root.after(0, self._shutdown),
                 )
-            self._tray.start()
+            try:
+                self._tray.start()
+            except Exception as exc:
+                self._tray = None
+                messagebox.showwarning("Системный трей недоступен", f"Не удалось включить значок в трее: {exc}", parent=self.root)
         elif self._tray is not None:
             self._tray.stop()
             self._tray = None
