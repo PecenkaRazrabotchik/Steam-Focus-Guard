@@ -12,6 +12,12 @@ def main() -> int:
     if "--sync-websites" in args:
         from src.website_blocker_cli import main as sync_main
         return sync_main()
+    if "--install-startup" in args:
+        from src.startup import install_startup
+        return install_startup()
+    if "--uninstall-startup" in args:
+        from src.startup import uninstall_startup
+        return uninstall_startup()
     if "--stop" in args:
         STOP_REQUEST_PATH.write_text("stop", encoding="utf-8")
         return 0
