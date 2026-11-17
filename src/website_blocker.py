@@ -91,7 +91,7 @@ def sync_hosts(domains: Iterable[str]) -> tuple[int, Path]:
     else:
         updated = base
     temp = path.with_suffix(".focus-guard.tmp")
-    temp.write_text(updated, encoding="utf-8", newline="\n")
+    temp.write_text(updated, encoding="utf-8", errors="surrogateescape", newline="\n")
     temp.replace(path)
     subprocess.run(["ipconfig", "/flushdns"], capture_output=True, text=True, check=False)
     return len(selected), path
