@@ -1,35 +1,26 @@
-"""Application entry point and process singleton management."""
+"""Desktop application entry point and singleton management."""
 from __future__ import annotations
-
 import os
 import sys
-
 from src.config_manager import load_config
 from src.paths import LOCK_PATH, STOP_REQUEST_PATH, ensure_project_layout
-from src.startup import install_startup, uninstall_startup
 from src.steam_focus_guard import SteamFocusGuard, psutil
-
 
 def main() -> int:
     ensure_project_layout()
     args = set(sys.argv[1:])
-    if "--install-startup" in args:
-        return install_startup()
-    if "--uninstall-startup" in args:
-        return uninstall_startup()
+    if "--sync-websites" in args:
+        from src.website_blocker_cli import main as sync_main
+        return sync_main()
     if "--stop" in args:
         STOP_REQUEST_PATH.write_text("stop", encoding="utf-8")
-        config, _ = load_config()
-        print(config["ui"]["stop_requested"])
         return 0
     if os.name != "nt":
-        print("Этот скрипт рассчитан на Windows.")
+        print("Focus Guard предназначен для Windows.")
         return 1
     if psutil is None:
-        config, _ = load_config()
-        print(config["ui"]["dependency_missing"])
+        print("Не найден psutil. Установи зависимости приложения.")
         return 1
-
     lock_file = None
     try:
         import msvcrt
@@ -41,18 +32,15 @@ def main() -> int:
         lock_file.seek(0)
         msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError:
-        config, _ = load_config()
-        print(config["ui"]["already_running"])
+        print("Focus Guard уже запущен.")
         return 0
     except Exception:
         lock_file = None
-
     try:
         if STOP_REQUEST_PATH.exists():
             STOP_REQUEST_PATH.unlink()
     except OSError:
         pass
-
     try:
         app = SteamFocusGuard(background="--background" in args)
         app.run()
@@ -66,3 +54,6 @@ def main() -> int:
         except Exception:
             pass
     return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
