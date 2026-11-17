@@ -277,6 +277,7 @@ class SteamFocusGuard:
         ctk = self.ctk
         for child in self.task_list_frame.winfo_children():
             child.destroy()
+        self.status_label.configure(text=self.t("status_message"))
         tasks = self._today_tasks()
         if not tasks:
             empty = ctk.CTkFrame(self.task_list_frame, fg_color=self.PANEL, corner_radius=16)
