@@ -71,6 +71,14 @@ class SettingsWindow:
         ctk.CTkLabel(tab, text="Интервал проверки процессов (мс)", text_color="#9CA3AF").pack(anchor="w", padx=16, pady=(22, 4))
         self.scan_entry = ctk.CTkEntry(tab, width=150)
         self.scan_entry.pack(anchor="w", padx=16, pady=(0, 8))
+        ctk.CTkLabel(tab, text="Путь к steam.exe (необязательно)", text_color="#9CA3AF").pack(anchor="w", padx=16, pady=(10, 4))
+        self.steam_path_entry = ctk.CTkEntry(tab, height=36, corner_radius=9)
+        self.steam_path_entry.pack(fill="x", padx=16, pady=(0, 8))
+        ctk.CTkLabel(tab, text="Задержка повторной блокировки после закрытия Steam (сек.)", text_color="#9CA3AF").pack(anchor="w", padx=16, pady=(6, 4))
+        self.grace_entry = ctk.CTkEntry(tab, width=150)
+        self.grace_entry.pack(anchor="w", padx=16, pady=(0, 8))
+        self.launch_steam_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(tab, text="Автоматически открывать Steam после выполнения плана", variable=self.launch_steam_var).pack(anchor="w", padx=16, pady=(8, 10))
         ctk.CTkLabel(tab, text="Постоянный текст под таймером", text_color="#9CA3AF").pack(anchor="w", padx=16, pady=(16, 4))
         self.status_message_entry = ctk.CTkEntry(tab, height=38, corner_radius=9)
         self.status_message_entry.pack(fill="x", padx=16, pady=(0, 8))
@@ -87,6 +95,9 @@ class SettingsWindow:
         self.close_tray_var.set(bool(app.get("close_to_tray", True)))
         self.top_var.set(bool(app.get("always_on_top", False)))
         self.scan_entry.insert(0, str(app.get("scan_interval_ms", 400)))
+        self.steam_path_entry.insert(0, str(app.get("steam_executable", "")))
+        self.grace_entry.insert(0, str(app.get("close_grace_seconds", 8)))
+        self.launch_steam_var.set(bool(app.get("launch_after_grant", True)))
         self.status_message_entry.insert(0, str(self.config.get("ui", {}).get("status_message", "")))
 
     @staticmethod
@@ -118,8 +129,11 @@ class SettingsWindow:
             if self.web_enabled.get() and not websites:
                 raise ValueError("Добавь хотя бы один домен или отключи блокировку сайтов.")
             scan_ms = int(self.scan_entry.get().strip())
+            grace_seconds = int(self.grace_entry.get().strip())
             if scan_ms < 200 or scan_ms > 10000:
                 raise ValueError("Интервал проверки должен быть от 200 до 10000 мс.")
+            if grace_seconds < 0 or grace_seconds > 120:
+                raise ValueError("Задержка повторной блокировки должна быть от 0 до 120 секунд.")
             updated = copy.deepcopy(self.config)
             rules = updated.setdefault("rules", {})
             rules["blocked_apps"] = blocked_apps
@@ -131,6 +145,9 @@ class SettingsWindow:
             app["close_to_tray"] = bool(self.close_tray_var.get())
             app["always_on_top"] = bool(self.top_var.get())
             app["scan_interval_ms"] = scan_ms
+            app["steam_executable"] = self.steam_path_entry.get().strip()
+            app["close_grace_seconds"] = grace_seconds
+            app["launch_after_grant"] = bool(self.launch_steam_var.get())
             updated.setdefault("ui", {})["status_message"] = self.status_message_entry.get().strip()
             updated = deep_merge(DEFAULT_CONFIG, updated)
             if CONFIG_PATH.exists():
