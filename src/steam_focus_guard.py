@@ -199,7 +199,13 @@ class SteamFocusGuard:
         ctk.CTkLabel(dialog, text="Приоритет определяет порядок задач в общем списке.", text_color=self.MUTED).pack(anchor="w", padx=24, pady=(0, 14))
         choices = ctk.CTkFrame(dialog, fg_color="transparent")
         choices.pack(fill="x", padx=20)
-        badge = ctk.CTkLabel(dialog, text="", width=150, height=38, corner_radius=10, text_color="#111827", font=ctk.CTkFont(weight="bold"))
+        form = ctk.CTkFrame(dialog, fg_color=self.PANEL, corner_radius=14)
+        form.pack(fill="x", padx=24, pady=22)
+        badge = ctk.CTkLabel(form, text="", width=150, height=38, corner_radius=10, text_color="#111827", font=ctk.CTkFont(weight="bold"))
+        badge.pack(side="left", padx=14, pady=18)
+        entry = ctk.CTkEntry(form, height=42, placeholder_text="Название или описание задачи", corner_radius=10)
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 14), pady=18)
+        entry.insert(0, (task or {}).get("text", ""))
         def select_focus(level: str) -> None:
             selected["focus"] = level
             meta = FOCUS_LEVELS[level]
@@ -213,12 +219,6 @@ class SteamFocusGuard:
             button.pack(side="left", fill="x", expand=True, padx=4)
             focus_buttons[level] = button
 
-        form = ctk.CTkFrame(dialog, fg_color=self.PANEL, corner_radius=14)
-        form.pack(fill="x", padx=24, pady=22)
-        badge.pack(in_=form, side="left", padx=14, pady=18)
-        entry = ctk.CTkEntry(form, height=42, placeholder_text="Название или описание задачи", corner_radius=10)
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 14), pady=18)
-        entry.insert(0, (task or {}).get("text", ""))
         select_focus(selected["focus"])
 
         timing = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -314,13 +314,16 @@ class SteamFocusGuard:
 
     def _apply_settings(self, updated_config: dict[str, Any]) -> None:
         previous_rules = self.config.get("rules", {})
+        previous_web = (bool(previous_rules.get("website_blocking_enabled", False)), tuple(previous_rules.get("blocked_websites", [])))
         self.config = updated_config
         self.ui_text = self.config["ui"]
         self.app_config = self.config["app"]
         self.root.title(self.t("window_title"))
         self.root.attributes("-topmost", bool(self.app_config.get("always_on_top", False)))
         self.root.geometry(f'{int(self.app_config.get("window_width", 1040))}x{int(self.app_config.get("window_height", 760))}')
-        if previous_rules != self.config.get("rules", {}):
+        current_rules = self.config.get("rules", {})
+        current_web = (bool(current_rules.get("website_blocking_enabled", False)), tuple(current_rules.get("blocked_websites", [])))
+        if previous_web != current_web:
             try:
                 request_admin_sync()
                 messagebox.showinfo("Блокировка сайтов", "Запрошено применение правил сайтов. Подтверди запрос UAC Windows, если он появится.", parent=self.root)
@@ -366,6 +369,8 @@ class SteamFocusGuard:
             self._shutdown()
 
     def mark_study_started(self) -> None:
+        if self.mode == "unlimited":
+            return
         if not self._today_tasks():
             messagebox.showinfo("Список задач пуст", "Сначала добавь хотя бы одну задачу.", parent=self.root)
             return
