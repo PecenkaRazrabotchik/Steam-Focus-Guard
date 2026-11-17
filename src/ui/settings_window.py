@@ -71,6 +71,9 @@ class SettingsWindow:
         ctk.CTkLabel(tab, text="Интервал проверки процессов (мс)", text_color="#9CA3AF").pack(anchor="w", padx=16, pady=(22, 4))
         self.scan_entry = ctk.CTkEntry(tab, width=150)
         self.scan_entry.pack(anchor="w", padx=16, pady=(0, 8))
+        ctk.CTkLabel(tab, text="Постоянный текст под таймером", text_color="#9CA3AF").pack(anchor="w", padx=16, pady=(16, 4))
+        self.status_message_entry = ctk.CTkEntry(tab, height=38, corner_radius=9)
+        self.status_message_entry.pack(fill="x", padx=16, pady=(0, 8))
         ctk.CTkLabel(tab, text="Сборка для Windows будет запускаться как отдельное приложение. Настройка автозапуска создаёт обычную запись в HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run.", text_color="#9CA3AF", wraplength=660, justify="left").pack(anchor="w", padx=16, pady=(14, 10))
 
     def _load(self):
@@ -84,6 +87,7 @@ class SettingsWindow:
         self.close_tray_var.set(bool(app.get("close_to_tray", True)))
         self.top_var.set(bool(app.get("always_on_top", False)))
         self.scan_entry.insert(0, str(app.get("scan_interval_ms", 400)))
+        self.status_message_entry.insert(0, str(self.config.get("ui", {}).get("status_message", "")))
 
     @staticmethod
     def _lines(widget):
@@ -125,6 +129,7 @@ class SettingsWindow:
             app["close_to_tray"] = bool(self.close_tray_var.get())
             app["always_on_top"] = bool(self.top_var.get())
             app["scan_interval_ms"] = scan_ms
+            updated.setdefault("ui", {})["status_message"] = self.status_message_entry.get().strip()
             updated = deep_merge(DEFAULT_CONFIG, updated)
             if CONFIG_PATH.exists():
                 folder = CONFIG_DIR / "backups"
