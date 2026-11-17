@@ -13,3 +13,6 @@ data/*
 config/config.json
 config/backups/
 config.json
+
+build/
+dist/
