@@ -8,7 +8,8 @@ from src.task_manager import normalize_tasks
 DEFAULT_CONFIG: dict[str, Any] = {
     "app": {
         "steam_executable": "", "steam_process_names": ["steam.exe"],
-        "scan_interval_ms": 400, "window_width": 1040, "window_height": 760,
+        "scan_interval_ms": 400, "close_grace_seconds": 8, "launch_after_grant": True,
+        "window_width": 1040, "window_height": 760,
         "always_on_top": False, "show_in_tray": True,
         "start_with_windows": False, "close_to_tray": True,
     },
