@@ -111,7 +111,7 @@ class SettingsWindow:
             blocked_apps = self._lines(self.apps_text)
             if any("/" in name or "\\" in name or not name.lower().endswith(".exe") for name in blocked_apps):
                 raise ValueError("Для блокировки приложений указывай только имя процесса с расширением .exe, по одному на строку.")
-            protected = {"system", "system idle process", "csrss.exe", "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe", "smss.exe", "dwm.exe", "explorer.exe"}
+            protected = {"system", "system idle process", "csrss.exe", "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe", "smss.exe", "dwm.exe", "explorer.exe", "python.exe", "pythonw.exe", "focusguard.exe"}
             if any(name.casefold() in protected for name in blocked_apps):
                 raise ValueError("В списке есть системный процесс, блокировка которого запрещена.")
             websites = normalise_domains(self._lines(self.web_text))
