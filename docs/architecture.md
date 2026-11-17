@@ -9,6 +9,7 @@
 - Windows Registry — автозапуск текущего пользователя.
 - Windows hosts — опциональная блокировка доменов с UAC.
 - PyInstaller — сборка переносимой onedir-версии приложения.
+- GitHub Actions на Windows runner — автоматическая сборка EXE и публикация artifact.
 
 ## Основные модули
 
