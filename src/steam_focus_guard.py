@@ -572,7 +572,9 @@ class SteamFocusGuard:
             app_rules = {str(name).casefold() for name in self.config.get("rules", {}).get("blocked_apps", [])}
             steam_names = {str(name).casefold() for name in self.app_config.get("steam_process_names", ["steam.exe"])}
             app_rules -= steam_names
-            if app_rules:
+            # User-selected distracting applications are blocked only during focus,
+            # not after the daily plan has been completed and access is granted.
+            if self.mode in ("blocked", "study") and app_rules:
                 blocked = self._find_processes(app_rules)
                 if blocked:
                     self._terminate_processes(blocked)
