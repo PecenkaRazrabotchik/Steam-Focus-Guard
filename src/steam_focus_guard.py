@@ -384,13 +384,13 @@ class SteamFocusGuard:
             pass
 
     def _hide_to_tray_or_minimise(self) -> None:
-        if self.app_config.get("show_in_tray", True):
+        if self._tray is not None and self.app_config.get("show_in_tray", True):
             self.root.withdraw()
         else:
             self.root.iconify()
 
     def on_close(self) -> None:
-        if self.app_config.get("show_in_tray", True) and self.app_config.get("close_to_tray", True):
+        if self._tray is not None and self.app_config.get("show_in_tray", True) and self.app_config.get("close_to_tray", True):
             self.root.withdraw()
             return
         answer = messagebox.askyesno(self.t("exit_title"), self.t("exit_message"), parent=self.root)
