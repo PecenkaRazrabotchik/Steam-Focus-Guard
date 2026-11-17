@@ -115,6 +115,8 @@ class SettingsWindow:
             if any(name.casefold() in protected for name in blocked_apps):
                 raise ValueError("В списке есть системный процесс, блокировка которого запрещена.")
             websites = normalise_domains(self._lines(self.web_text))
+            if self.web_enabled.get() and not websites:
+                raise ValueError("Добавь хотя бы один домен или отключи блокировку сайтов.")
             scan_ms = int(self.scan_entry.get().strip())
             if scan_ms < 200 or scan_ms > 10000:
                 raise ValueError("Интервал проверки должен быть от 200 до 10000 мс.")
