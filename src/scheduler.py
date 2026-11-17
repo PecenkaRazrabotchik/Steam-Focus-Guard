@@ -28,4 +28,12 @@ def schedule_for_today(config: dict[str, Any], current_date: date | None = None)
 
 def required_study_minutes_for_today(config: dict[str, Any], current_date: date | None = None) -> int:
     """New task model calculates the target from individual task durations."""
-    return planned_minutes(tasks_for_date(config, current_date))
+    current_date = current_date or datetime.now().date()
+    data = _day_data(config, current_date)
+    calculated = planned_minutes(normalize_tasks(data.get("tasks", [])))
+    if calculated:
+        return calculated
+    try:
+        return max(0, int(data.get("legacy_required_study_minutes", 0)))
+    except (TypeError, ValueError):
+        return 0
