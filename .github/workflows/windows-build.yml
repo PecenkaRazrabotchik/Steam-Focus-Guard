@@ -1,0 +1,44 @@
+name: Windows desktop build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - app-redesign
+    paths:
+      - "main.py"
+      - "src/**"
+      - "config/config.example.json"
+      - "requirements.txt"
+      - ".github/workflows/windows-build.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile and test
+        run: |
+          python -m compileall -q main.py steam_focus_guard.py src tests
+          python -m unittest discover -s tests -v
+          python -c "import json; json.load(open('config/config.example.json', encoding='utf-8'))"
+      - name: Build Focus Guard
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name FocusGuard --collect-all customtkinter --collect-all pystray --collect-all PIL main.py
+          New-Item -ItemType Directory -Force dist/FocusGuard/config | Out-Null
+          New-Item -ItemType Directory -Force dist/FocusGuard/data | Out-Null
+          Copy-Item config/config.example.json dist/FocusGuard/config/config.example.json -Force
+      - name: Upload Windows application
+        uses: actions/upload-artifact@v4
+        with:
+          name: FocusGuard-Windows
+          path: dist/FocusGuard/
+          if-no-files-found: error
