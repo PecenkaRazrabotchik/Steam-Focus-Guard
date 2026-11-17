@@ -517,6 +517,8 @@ class SteamFocusGuard:
         self.root.iconify()
 
     def _launch_steam_or_notify(self) -> None:
+        if not self.app_config.get("launch_after_grant", True):
+            return
         executable = get_steam_executable(self.config, self.detected_steam_path)
         if executable is None:
             messagebox.showwarning("Steam не найден", "Укажи путь к steam.exe в настройках.", parent=self.root)
@@ -587,7 +589,7 @@ class SteamFocusGuard:
                 elif self._steam_seen:
                     if self._steam_missing_since is None:
                         self._steam_missing_since = time.monotonic()
-                    elif time.monotonic() - self._steam_missing_since >= 8:
+                    elif time.monotonic() - self._steam_missing_since >= float(self.app_config.get("close_grace_seconds", 8)):
                         self.mode = "blocked"
                         self._steam_seen = False
                         self._steam_missing_since = None
