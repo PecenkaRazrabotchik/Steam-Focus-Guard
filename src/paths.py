@@ -1,10 +1,10 @@
-"""Project paths and non-destructive migration from the legacy flat layout."""
+"""Project paths. Frozen builds keep user data beside the executable."""
 from __future__ import annotations
-
 import shutil
+import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -22,14 +22,12 @@ LEGACY_FILES = (
     (PROJECT_ROOT / "stop.request", STOP_REQUEST_PATH),
 )
 
-
 def _copy_if_missing(source: Path, destination: Path) -> bool:
     if not source.is_file() or destination.exists():
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
     return True
-
 
 def ensure_project_layout() -> None:
     for directory in (CONFIG_DIR, DATA_DIR, SCRIPTS_DIR, DOCS_DIR):

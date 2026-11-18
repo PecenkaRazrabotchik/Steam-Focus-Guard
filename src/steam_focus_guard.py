@@ -1,11 +1,13 @@
-"""Tkinter UI and Steam process guard controller."""
+"""Main Focus Guard desktop application."""
 from __future__ import annotations
 
 import json
 import os
 import subprocess
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 try:
@@ -13,99 +15,101 @@ try:
 except ImportError:
     psutil = None
 
-from src.config_manager import load_config
+from tkinter import messagebox
+
+from src.config_manager import load_config, save_config
 from src.paths import STATE_PATH, STOP_REQUEST_PATH
-from src.scheduler import schedule_for_today, required_study_minutes_for_today
+from src.scheduler import DAY_KEYS, DAY_NAMES, required_study_minutes_for_today, schedule_for_today
 from src.steam_utils import get_steam_executable
 from src.storage import log_event, save_json
+from src.task_manager import (
+    DEFAULT_CATEGORIES, FOCUS_LEVELS, PRIORITY_LEVELS, STATUS_LEVELS,
+    normalize_tasks, sort_tasks,
+)
+from src.tray import SystemTrayController
+from src.website_blocker import request_admin_sync
 
 
 class SteamFocusGuard:
-    def __init__(self, background: bool = False) -> None:
-        import tkinter as tk
-        from tkinter import messagebox
+    """Owns the GUI, focus timer and enforcement loop."""
 
-        self.tk = tk
+    BG = "#111827"
+    PANEL = "#1F2937"
+    PANEL_LIGHT = "#263244"
+    TEXT = "#F9FAFB"
+    MUTED = "#9CA3AF"
+    BLUE = "#3B82F6"
+    RED = "#DC5555"
+
+    def __init__(self, background: bool = False) -> None:
+        import customtkinter as ctk
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+        self.ctk = ctk
         self.messagebox = messagebox
         self.config, self.config_error = load_config()
-        self.ui_text: dict[str, str] = self.config["ui"]
-        self.app_config: dict[str, Any] = self.config["app"]
+        self.ui_text = self.config["ui"]
+        self.app_config = self.config["app"]
         self.running = True
         self.background = background
         self.detected_steam_path: str | None = None
-        self.notification_window = None
-        self.gate_visible = True
-        self.temp_view_visible = False
-        self._gate_was_requested = False
-        self._steam_seen_in_session = False
+        self.selected_date = datetime.now().date()
+        self.mode = "blocked"
+        self._steam_seen = False
         self._steam_missing_since: float | None = None
-        self._permission_granted_at = 0.0
-        self._last_process_scan: list[Any] = []
-        self._timer_end: float | None = None
-        self._warned_5 = False
-        self._warned_1 = False
-        self.settings_window = None
+        self._last_scan = 0.0
+        self._settings_window = None
+        self._tray: SystemTrayController | None = None
+        self._load_state()
 
-        self.state = self._load_state()
-        self.mode = self.state.get("mode", "blocked")
-        if self.mode == "unlimited":
-            # Unlimited permission is deliberately session-only and is not restored after a guard restart.
-            self.mode = "blocked"
-        self.study_date = self.state.get("study_date")
-        self.study_elapsed_seconds = max(0, int(self.state.get("study_elapsed_seconds", 0) or 0))
-        self.study_running_since = self.state.get("study_running_since")
-        # Migrate legacy sessions that stored only their start timestamp.
-        legacy_started_at = self.state.get("study_started_at")
+        self.root = ctk.CTk()
+        self.root.title(self.ui_text["window_title"])
+        self.root.geometry(f'{int(self.app_config.get("window_width", 1040))}x{int(self.app_config.get("window_height", 760))}')
+        self.root.minsize(780, 620)
+        self.root.configure(fg_color=self.BG)
+        self.root.attributes("-topmost", bool(self.app_config.get("always_on_top", False)))
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._build_ui()
+        self._refresh_ui()
+        self._update_timer_display()
+        self._sync_tray()
+        if self.config_error:
+            self.root.after(500, lambda: messagebox.showwarning(
+                self.ui_text["config_error_title"],
+                self.ui_text["config_error_message"].format(error=self.config_error),
+                parent=self.root,
+            ))
+        if self.background:
+            self.root.after(1000, self._hide_to_tray_or_minimise)
+        self.root.after(300, self._monitor_processes)
+
+    def _load_state(self) -> None:
+        try:
+            state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                state = {}
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        self.study_date = state.get("study_date")
+        self.study_elapsed_seconds = max(0, int(state.get("study_elapsed_seconds", 0) or 0))
+        self.study_running_since = state.get("study_running_since")
+        legacy_start = state.get("study_started_at")
         today = datetime.now().date().isoformat()
-        if not self.study_date and legacy_started_at:
+        if not self.study_date and legacy_start:
             try:
-                legacy_start = float(legacy_started_at)
-                if datetime.fromtimestamp(legacy_start).date().isoformat() == today:
+                timestamp = float(legacy_start)
+                if datetime.fromtimestamp(timestamp).date().isoformat() == today:
                     self.study_date = today
-                    self.study_running_since = legacy_start
+                    self.study_running_since = timestamp
             except (TypeError, ValueError, OSError, OverflowError):
                 pass
         if self.study_date != today:
             self.study_date = None
             self.study_elapsed_seconds = 0
             self.study_running_since = None
-        if self.mode == "timed":
-            self._timer_end = self.state.get("timed_until")
-            if not isinstance(self._timer_end, (int, float)) or self._timer_end <= time.time():
-                self.mode = "blocked"
-                self._timer_end = None
-        self._save_state()
-
-        self.root = tk.Tk()
-        self.root.title(self.ui_text["window_title"])
-        width = int(self.app_config.get("window_width", 650))
-        height = int(self.app_config.get("window_height", 700))
-        self.root.geometry(f"{width}x{height}")
-        self.root.minsize(540, 560)
-        self.root.configure(bg="#151820")
-        if self.app_config.get("always_on_top", True):
-            self.root.attributes("-topmost", True)
-        self.root.protocol("WM_DELETE_WINDOW", self.request_exit)
-
-        self._build_ui()
-        self._refresh_ui()
-        self._update_timer_display()
-        if self.config_error:
-            self.root.after(400, lambda: self.messagebox.showwarning(
-                self.ui_text["config_error_title"],
-                self.ui_text["config_error_message"].format(error=self.config_error),
-                parent=self.root,
-            ))
-        if self.background:
-            self.root.after(1400, self._minimize_startup_window)
-        self._schedule_monitor()
-
-    def _load_state(self) -> dict[str, Any]:
-        try:
-            data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            return {}
+        # An unlimited Steam permission must never survive an application restart.
+        if state.get("mode") == "unlimited":
+            self.mode = "blocked"
 
     def _save_state(self) -> None:
         save_json(STATE_PATH, {
@@ -113,7 +117,6 @@ class SteamFocusGuard:
             "study_date": self.study_date,
             "study_elapsed_seconds": self.study_elapsed_seconds,
             "study_running_since": self.study_running_since,
-            "timed_until": self._timer_end,
         })
 
     def t(self, key: str, **kwargs: Any) -> str:
@@ -123,193 +126,407 @@ class SteamFocusGuard:
         except (KeyError, ValueError):
             return value
 
-    def _minimize_startup_window(self) -> None:
-        if self.running and not self._gate_was_requested:
-            self.root.iconify()
-
     def _build_ui(self) -> None:
-        tk = self.tk
-        self.outer = tk.Frame(self.root, bg="#151820", padx=28, pady=18)
-        self.outer.pack(fill="both", expand=True)
+        ctk = self.ctk
+        self.root.geometry("1280x880")
+        self.root.minsize(980, 720)
+        shell = ctk.CTkFrame(self.root, fg_color="transparent")
+        shell.pack(fill="both", expand=True, padx=32, pady=24)
 
-        self.heading_label = tk.Label(
-            self.outer, text="", bg="#151820", fg="#f2f4f8",
-            font=("Segoe UI", 19, "bold"), wraplength=580, justify="left"
-        )
-        self.heading_label.pack(anchor="w", pady=(0, 8))
+        # Header — title, description, date navigation and primary action.
+        header = ctk.CTkFrame(shell, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 24))
+        title_box = ctk.CTkFrame(header, fg_color="transparent")
+        title_box.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(title_box, text="Task Manager", text_color="#F8FAFC", font=ctk.CTkFont(size=30, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(title_box, text="Организуй свои задачи и достигай целей", text_color="#9CA3AF", font=ctk.CTkFont(size=14)).pack(anchor="w", pady=(2, 8))
+        date_row = ctk.CTkFrame(title_box, fg_color="transparent")
+        date_row.pack(anchor="w")
+        self.previous_day_button = ctk.CTkButton(date_row, text="‹", width=27, height=25, corner_radius=7, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda: self.change_selected_day(-1))
+        self.previous_day_button.pack(side="left", padx=(0, 6))
+        self.date_label = ctk.CTkLabel(date_row, text="", text_color="#94A3B8", font=ctk.CTkFont(size=11))
+        self.date_label.pack(side="left")
+        self.next_day_button = ctk.CTkButton(date_row, text="›", width=27, height=25, corner_radius=7, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=lambda: self.change_selected_day(1))
+        self.next_day_button.pack(side="left", padx=(6, 0))
+        header_actions = ctk.CTkFrame(header, fg_color="transparent")
+        header_actions.pack(side="right", anchor="n", pady=(7, 0))
+        self.settings_button = ctk.CTkButton(header_actions, text="⚙", width=42, height=42, corner_radius=12, fg_color=self.PANEL_LIGHT, hover_color="#334155", command=self.open_settings)
+        self.settings_button.pack(side="right", padx=(9, 0))
+        self.add_task_button = ctk.CTkButton(header_actions, text="+  Новая задача", width=158, height=42, corner_radius=12, fg_color="#0891B2", hover_color="#2563EB", font=ctk.CTkFont(size=13, weight="bold"), command=self.open_task_dialog)
+        self.add_task_button.pack(side="right")
 
-        self.date_label = tk.Label(
-            self.outer, text="", bg="#151820", fg="#a9b2c2",
-            font=("Segoe UI", 10)
+        # Four dashboard metrics inspired by the reference design.
+        stats = ctk.CTkFrame(shell, fg_color="transparent")
+        stats.pack(fill="x", pady=(0, 18))
+        for column in range(4):
+            stats.grid_columnconfigure(column, weight=1, uniform="metric")
+        self.metric_values = {}
+        metric_specs = (
+            ("total", "Всего задач", "#3B82F6", "▦"),
+            ("completed", "Выполнено", "#10B981", "✓"),
+            ("progress", "В работе", "#F59E0B", "◷"),
+            ("urgent", "Срочные", "#EF4444", "↗"),
         )
-        self.date_label.pack(anchor="w", pady=(0, 12))
+        for column, (key, label, color, symbol) in enumerate(metric_specs):
+            card = ctk.CTkFrame(stats, fg_color="#151E30", border_width=1, border_color="#253149", corner_radius=15, height=104)
+            card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 10, 0 if column == 3 else 10))
+            card.grid_propagate(False)
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=18, pady=(14, 3))
+            ctk.CTkLabel(top, text=label, text_color="#8D98AB", font=ctk.CTkFont(size=11)).pack(side="left")
+            ctk.CTkLabel(top, text=symbol, text_color=color, fg_color="#202B43", corner_radius=9, width=31, height=31, font=ctk.CTkFont(size=17, weight="bold")).pack(side="right")
+            value = ctk.CTkLabel(card, text="0", text_color="#F8FAFC", font=ctk.CTkFont(size=25, weight="bold"))
+            value.pack(anchor="w", padx=18, pady=(0, 8))
+            self.metric_values[key] = value
 
-        self.timer_label = tk.Label(
-            self.outer, text="", bg="#222936", fg="#f2f4f8",
-            font=("Segoe UI", 12, "bold"), padx=12, pady=10,
-            wraplength=560, justify="left"
-        )
-        self.timer_label.pack(fill="x", pady=(0, 12))
+        # Compact focus timer keeps existing pause/check/reset features without dominating the task board.
+        focus_bar = ctk.CTkFrame(shell, fg_color="#151E30", border_width=1, border_color="#253149", corner_radius=14)
+        focus_bar.pack(fill="x", pady=(0, 16))
+        self.timer_label = ctk.CTkLabel(focus_bar, text="", text_color="#F8FAFC", font=ctk.CTkFont(size=14, weight="bold"), anchor="w")
+        self.timer_label.pack(side="left", padx=16, pady=12, fill="x", expand=True)
+        self.status_label = ctk.CTkLabel(focus_bar, text=self.t("status_message"), text_color="#94A3B8", font=ctk.CTkFont(size=10), anchor="e")
+        self.status_label.pack(side="left", padx=8)
+        self.start_button = ctk.CTkButton(focus_bar, text=self.t("study_button"), height=34, width=115, corner_radius=9, fg_color="#2563EB", hover_color="#1D4ED8", command=self.mark_study_started)
+        self.start_button.pack(side="right", padx=(5, 12), pady=8)
+        self.pause_button = ctk.CTkButton(focus_bar, text=self.t("pause_button"), height=34, width=92, corner_radius=9, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=self.toggle_study_pause)
+        self.pause_button.pack(side="right", padx=4, pady=8)
+        self.check_button = ctk.CTkButton(focus_bar, text=self.t("check_button"), height=34, width=120, corner_radius=9, fg_color="#166534", hover_color="#15803D", command=self.check_study_time)
+        self.check_button.pack(side="right", padx=4, pady=8)
+        self.reset_timer_button = ctk.CTkButton(focus_bar, text="↺", height=34, width=38, corner_radius=9, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=self.reset_study_timer)
+        self.reset_timer_button.pack(side="right", padx=4, pady=8)
 
-        self.status_label = tk.Label(
-            self.outer, text="", bg="#222936", fg="#d9e2f2",
-            font=("Segoe UI", 10), padx=12, pady=10, wraplength=560, justify="left"
-        )
-        self.status_label.pack(fill="x", pady=(0, 18))
+        # Search and filters.
+        filter_panel = ctk.CTkFrame(shell, fg_color="#151E30", border_width=1, border_color="#29354A", corner_radius=15)
+        filter_panel.pack(fill="x", pady=(0, 18))
+        filter_row = ctk.CTkFrame(filter_panel, fg_color="transparent")
+        filter_row.pack(fill="x", padx=14, pady=12)
+        self.search_var = ctk.StringVar()
+        self.search_entry = ctk.CTkEntry(filter_row, textvariable=self.search_var, height=42, corner_radius=10, border_color="#354258", fg_color="#1B2639", placeholder_text="⌕  Поиск задач...")
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.search_entry.bind("<KeyRelease>", lambda _event: self._refresh_ui())
+        self.status_filter_var = ctk.StringVar(value="Все статусы")
+        self.priority_filter_var = ctk.StringVar(value="Все приоритеты")
+        self.category_filter_var = ctk.StringVar(value="Все категории")
+        self.status_filter = ctk.CTkOptionMenu(filter_row, variable=self.status_filter_var, values=["Все статусы"] + [meta["label"] for meta in STATUS_LEVELS.values()], width=142, height=42, corner_radius=10, fg_color="#202B3E", button_color="#2D3A50", button_hover_color="#3A4961", command=lambda _value: self._refresh_ui())
+        self.status_filter.pack(side="left", padx=4)
+        self.priority_filter = ctk.CTkOptionMenu(filter_row, variable=self.priority_filter_var, values=["Все приоритеты"] + [meta["label"] for meta in PRIORITY_LEVELS.values()], width=154, height=42, corner_radius=10, fg_color="#202B3E", button_color="#2D3A50", button_hover_color="#3A4961", command=lambda _value: self._refresh_ui())
+        self.priority_filter.pack(side="left", padx=4)
+        self.category_filter = ctk.CTkOptionMenu(filter_row, variable=self.category_filter_var, values=["Все категории"] + list(DEFAULT_CATEGORIES), width=145, height=42, corner_radius=10, fg_color="#202B3E", button_color="#2D3A50", button_hover_color="#3A4961", command=lambda _value: self._refresh_ui())
+        self.category_filter.pack(side="left", padx=(4, 0))
+
+        self.task_list_frame = ctk.CTkScrollableFrame(shell, fg_color="transparent", corner_radius=14)
+        self.task_list_frame.pack(fill="both", expand=True)
+        for column in range(3):
+            self.task_list_frame.grid_columnconfigure(column, weight=1, uniform="task-card")
+        ctk.CTkLabel(shell, text=self.t("footer_hint"), text_color="#68758B", font=ctk.CTkFont(size=10)).pack(anchor="w", pady=(12, 0))
+
+    def _slot_for_date(self, selected_date) -> dict[str, Any]:
+        schedule = self.config.setdefault("schedule", {})
+        special_dates = schedule.setdefault("special_dates", {})
+        date_key = selected_date.isoformat()
+        if date_key in special_dates and isinstance(special_dates[date_key], dict):
+            return special_dates[date_key]
+        return schedule.setdefault(DAY_KEYS[selected_date.weekday()], {"tasks": []})
+
+    def _today_slot(self) -> dict[str, Any]:
+        return self._slot_for_date(datetime.now().date())
+
+    def _selected_tasks(self) -> list[dict[str, Any]]:
+        return normalize_tasks(self._slot_for_date(self.selected_date).get("tasks", []))
+
+    def _today_tasks(self) -> list[dict[str, Any]]:
+        return normalize_tasks(self._today_slot().get("tasks", []))
+
+    def _write_selected_tasks(self, tasks: list[dict[str, Any]]) -> None:
+        self._slot_for_date(self.selected_date)["tasks"] = sort_tasks(tasks)
+        save_config(self.config)
+        self._refresh_ui()
+        self._update_timer_display(schedule_next=False)
+
+    def change_selected_day(self, delta: int) -> None:
+        self.selected_date += timedelta(days=delta)
+        self._refresh_ui()
+        self._update_timer_display(schedule_next=False)
+
+    def _task_dialog(self, task: dict[str, Any] | None = None) -> None:
+        ctk = self.ctk
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Новая задача" if task is None else "Изменить задачу")
+        dialog.geometry("690x610")
+        dialog.minsize(640, 570)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        selected_focus = {"value": (task or {}).get("focus", "main")}
+        ctk.CTkLabel(dialog, text="Новая задача" if task is None else "Редактирование задачи", font=ctk.CTkFont(size=23, weight="bold")).pack(anchor="w", padx=26, pady=(22, 4))
+        ctk.CTkLabel(dialog, text="Опиши задачу, выбери фокус и настрой детали.", text_color=self.MUTED).pack(anchor="w", padx=26, pady=(0, 18))
+
+        focus_panel = ctk.CTkFrame(dialog, fg_color=self.PANEL, corner_radius=13)
+        focus_panel.pack(fill="x", padx=24, pady=(0, 14))
+        ctk.CTkLabel(focus_panel, text="ФОКУС", text_color=self.MUTED, font=ctk.CTkFont(size=10, weight="bold")).pack(anchor="w", padx=14, pady=(12, 7))
+        focus_row = ctk.CTkFrame(focus_panel, fg_color="transparent")
+        focus_row.pack(fill="x", padx=10, pady=(0, 12))
+        focus_badge = ctk.CTkLabel(focus_row, text="", width=132, height=37, corner_radius=9, text_color="#111827", font=ctk.CTkFont(size=11, weight="bold"))
+        focus_badge.pack(side="left", padx=4)
+        focus_buttons = {}
+        def select_focus(level: str) -> None:
+            selected_focus["value"] = level
+            meta = FOCUS_LEVELS[level]
+            focus_badge.configure(text=meta["label"], fg_color=meta["color"])
+            for key, button in focus_buttons.items():
+                button.configure(border_width=2 if key == level else 0, border_color=meta["color"] if key == level else self.PANEL_LIGHT)
+        for level in ("main", "additional", "later"):
+            meta = FOCUS_LEVELS[level]
+            button = ctk.CTkButton(focus_row, text=meta["label"], height=37, corner_radius=9, fg_color="#263449", hover_color="#334155", text_color=meta["color"], command=lambda value=level: select_focus(value))
+            button.pack(side="left", fill="x", expand=True, padx=4)
+            focus_buttons[level] = button
+        select_focus(selected_focus["value"])
+
+        form = ctk.CTkFrame(dialog, fg_color="transparent")
+        form.pack(fill="both", expand=True, padx=26)
+        ctk.CTkLabel(form, text="Название задачи", text_color="#CBD5E1", font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", pady=(3, 6))
+        entry = ctk.CTkEntry(form, height=42, corner_radius=10, placeholder_text="Например: Подготовить проектное предложение")
+        entry.pack(fill="x")
+        entry.insert(0, (task or {}).get("text", ""))
+
+        metadata = ctk.CTkFrame(form, fg_color="transparent")
+        metadata.pack(fill="x", pady=(15, 0))
+        for column in range(3):
+            metadata.grid_columnconfigure(column, weight=1)
+        status_label_to_key = {meta["label"]: key for key, meta in STATUS_LEVELS.items()}
+        priority_label_to_key = {meta["label"]: key for key, meta in PRIORITY_LEVELS.items()}
+        current_status = (task or {}).get("status", "todo")
+        current_priority = (task or {}).get("priority", "medium")
+        status_var = ctk.StringVar(value=STATUS_LEVELS.get(current_status, STATUS_LEVELS["todo"])["label"])
+        priority_var = ctk.StringVar(value=PRIORITY_LEVELS.get(current_priority, PRIORITY_LEVELS["medium"])["label"])
+        category_var = ctk.StringVar(value=(task or {}).get("category", "Учёба"))
+        ctk.CTkLabel(metadata, text="Статус", text_color=self.MUTED).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 5))
+        ctk.CTkLabel(metadata, text="Приоритет", text_color=self.MUTED).grid(row=0, column=1, sticky="w", padx=8, pady=(0, 5))
+        ctk.CTkLabel(metadata, text="Категория", text_color=self.MUTED).grid(row=0, column=2, sticky="w", padx=(8, 0), pady=(0, 5))
+        status_menu = ctk.CTkOptionMenu(metadata, variable=status_var, values=list(status_label_to_key), height=38, corner_radius=9, fg_color="#263449", button_color="#334155", button_hover_color="#475569")
+        status_menu.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        priority_menu = ctk.CTkOptionMenu(metadata, variable=priority_var, values=list(priority_label_to_key), height=38, corner_radius=9, fg_color="#263449", button_color="#334155", button_hover_color="#475569")
+        priority_menu.grid(row=1, column=1, sticky="ew", padx=8)
+        category_entry = ctk.CTkEntry(metadata, textvariable=category_var, height=38, corner_radius=9, placeholder_text="Своя категория")
+        category_entry.grid(row=1, column=2, sticky="ew", padx=(8, 0))
+
+        ctk.CTkLabel(form, text="Планируемое время", text_color="#CBD5E1", font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", pady=(17, 6))
+        timing = ctk.CTkFrame(form, fg_color="transparent")
+        timing.pack(fill="x")
+        hour = ctk.CTkEntry(timing, width=90, height=38, corner_radius=9, placeholder_text="Часы")
+        hour.pack(side="left", padx=(0, 8))
+        minute = ctk.CTkEntry(timing, width=90, height=38, corner_radius=9, placeholder_text="Минуты")
+        minute.pack(side="left")
+        duration = int((task or {}).get("duration_minutes", 0))
+        hour.insert(0, str(duration // 60))
+        minute.insert(0, str(duration % 60))
+        error = ctk.CTkLabel(form, text="", text_color="#F87171", anchor="w")
+        error.pack(fill="x", pady=(8, 0))
+
+        footer = ctk.CTkFrame(dialog, fg_color="transparent")
+        footer.pack(fill="x", padx=24, pady=18)
+        ctk.CTkButton(footer, text="Отмена", width=110, height=40, corner_radius=9, fg_color=self.PANEL_LIGHT, hover_color="#374151", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        def save_task():
+            title = entry.get().strip()
+            try:
+                hours = int(hour.get() or 0)
+                minutes = int(minute.get() or 0)
+                if hours < 0 or minutes < 0 or minutes > 59 or hours > 23:
+                    raise ValueError
+            except ValueError:
+                error.configure(text="Укажи часы от 0 до 23 и минуты от 0 до 59.")
+                return
+            if not title:
+                error.configure(text="Введи название задачи.")
+                return
+            category = category_var.get().strip() or "Другое"
+            new_task = {
+                "id": (task or {}).get("id", uuid.uuid4().hex),
+                "focus": selected_focus["value"],
+                "text": title,
+                "duration_minutes": hours * 60 + minutes,
+                "status": status_label_to_key[status_var.get()],
+                "priority": priority_label_to_key[priority_var.get()],
+                "category": category,
+            }
+            current = self._selected_tasks()
+            if task is not None:
+                current = [item for item in current if item["id"] != task["id"]]
+            current.append(new_task)
+            self._write_selected_tasks(current)
+            log_event("task_saved", f"{selected_focus['value']}/{new_task['priority']}/{new_task['status']}: {title}")
+            dialog.destroy()
+        ctk.CTkButton(footer, text="Сохранить задачу", width=160, height=40, corner_radius=9, fg_color="#0891B2", hover_color="#2563EB", command=save_task).pack(side="right")
+        entry.focus_set()
+
+    def open_task_dialog(self) -> None:
+        self._task_dialog()
+
+    def _edit_task(self, task: dict[str, Any]) -> None:
+        self._task_dialog(task)
+
+    def _delete_task(self, task: dict[str, Any]) -> None:
+        if not messagebox.askyesno("Удалить задачу", f"Удалить задачу «{task['text']}»?", parent=self.root):
+            return
+        self._write_selected_tasks([item for item in self._selected_tasks() if item["id"] != task["id"]])
+        log_event("task_deleted", task["text"])
+
+    def _refresh_ui(self) -> None:
+        ctk = self.ctk
+        for child in self.task_list_frame.winfo_children():
+            child.destroy()
         self.status_label.configure(text=self.t("status_message"))
+        tasks = self._selected_tasks()
 
-        self.plan_heading = tk.Label(
-            self.outer, text="", bg="#151820", fg="#f2f4f8",
-            font=("Segoe UI", 12, "bold")
+        # Update metrics before filtering so they always describe the full selected-day list.
+        counts = {
+            "total": len(tasks),
+            "completed": sum(task.get("status") == "done" for task in tasks),
+            "progress": sum(task.get("status") == "in_progress" for task in tasks),
+            "urgent": sum(task.get("priority") == "urgent" and task.get("status") != "done" for task in tasks),
+        }
+        for key, value in counts.items():
+            self.metric_values[key].configure(text=str(value))
+
+        # Refresh category choices while retaining a valid current selection.
+        categories = sorted({str(task.get("category", "Другое")) for task in tasks}, key=str.casefold)
+        category_values = ["Все категории"] + categories
+        current_category = self.category_filter_var.get()
+        self.category_filter.configure(values=category_values)
+        if current_category not in category_values:
+            self.category_filter_var.set("Все категории")
+
+        search = self.search_var.get().strip().casefold()
+        status_filter = self.status_filter_var.get()
+        priority_filter = self.priority_filter_var.get()
+        category_filter = self.category_filter_var.get()
+        status_lookup = {meta["label"]: key for key, meta in STATUS_LEVELS.items()}
+        priority_lookup = {meta["label"]: key for key, meta in PRIORITY_LEVELS.items()}
+        visible = []
+        for task in tasks:
+            if search and search not in task["text"].casefold() and search not in task.get("category", "").casefold():
+                continue
+            if status_filter != "Все статусы" and task.get("status") != status_lookup.get(status_filter):
+                continue
+            if priority_filter != "Все приоритеты" and task.get("priority") != priority_lookup.get(priority_filter):
+                continue
+            if category_filter != "Все категории" and task.get("category") != category_filter:
+                continue
+            visible.append(task)
+
+        if not tasks:
+            empty = ctk.CTkFrame(self.task_list_frame, fg_color="#151E30", border_width=1, border_color="#29354A", corner_radius=16)
+            empty.grid(row=0, column=0, columnspan=3, sticky="ew", padx=4, pady=8)
+            ctk.CTkLabel(empty, text="Пока задач нет", text_color=self.TEXT, font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(28, 5))
+            ctk.CTkLabel(empty, text="Нажми «Новая задача», чтобы добавить первое дело.", text_color=self.MUTED).pack(pady=(0, 28))
+        elif not visible:
+            empty = ctk.CTkFrame(self.task_list_frame, fg_color="#151E30", border_width=1, border_color="#29354A", corner_radius=16)
+            empty.grid(row=0, column=0, columnspan=3, sticky="ew", padx=4, pady=8)
+            ctk.CTkLabel(empty, text="Задачи не найдены", text_color=self.TEXT, font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(24, 4))
+            ctk.CTkLabel(empty, text="Измени поисковый запрос или параметры фильтрации.", text_color=self.MUTED).pack(pady=(0, 24))
+
+        for index, task in enumerate(visible):
+            row, column = divmod(index, 3)
+            self._render_task_card(task, row, column)
+
+        selected_name = DAY_NAMES[self.selected_date.weekday()].capitalize()
+        self.date_label.configure(text=f"{self.selected_date.strftime('%d.%m.%Y')} · {selected_name}")
+        today = datetime.now().date()
+        controls_enabled = self.selected_date == today
+        self.start_button.configure(state="normal" if controls_enabled else "disabled")
+        self.pause_button.configure(state="normal" if controls_enabled and self.study_date == today.isoformat() else "disabled")
+        self.check_button.configure(state="normal" if controls_enabled else "disabled")
+        self.reset_timer_button.configure(state="normal" if controls_enabled and self.mode != "unlimited" else "disabled")
+        self.root.title(f"Task Manager · {selected_name}")
+
+    def _render_task_card(self, task: dict[str, Any], row: int, column: int) -> None:
+        ctk = self.ctk
+        focus_meta = FOCUS_LEVELS[task.get("focus", "later")]
+        status_meta = STATUS_LEVELS.get(task.get("status"), STATUS_LEVELS["todo"])
+        priority_meta = PRIORITY_LEVELS.get(task.get("priority"), PRIORITY_LEVELS["medium"])
+        card = ctk.CTkFrame(self.task_list_frame, fg_color="#182235", border_width=1, border_color="#2A354B", corner_radius=14)
+        card.grid(row=row, column=column, sticky="nsew", padx=5, pady=6)
+        accent = ctk.CTkFrame(card, width=4, corner_radius=0, fg_color=priority_meta["color"])
+        accent.pack(side="left", fill="y", padx=(0, 11))
+        content = ctk.CTkFrame(card, fg_color="transparent")
+        content.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=12)
+        header = ctk.CTkFrame(content, fg_color="transparent")
+        header.pack(fill="x")
+        title_font = ctk.CTkFont(size=14, weight="bold", overstrike=task.get("status") == "done")
+        ctk.CTkLabel(header, text=task["text"], text_color="#E5E7EB" if task.get("status") != "done" else "#8B95A6", font=title_font, anchor="w", justify="left", wraplength=310).pack(side="left", fill="x", expand=True)
+        actions = ctk.CTkFrame(header, fg_color="transparent")
+        actions.pack(side="right", padx=(4, 0))
+        ctk.CTkButton(actions, text="✎", width=27, height=25, corner_radius=7, fg_color="#263449", hover_color="#3A4961", command=lambda t=task: self._edit_task(t)).pack(side="left", padx=2)
+        ctk.CTkButton(actions, text="×", width=27, height=25, corner_radius=7, fg_color="#3B2630", hover_color="#65303D", text_color="#FCA5A5", command=lambda t=task: self._delete_task(t)).pack(side="left", padx=2)
+
+        tags = ctk.CTkFrame(content, fg_color="transparent")
+        tags.pack(fill="x", pady=(10, 8))
+        badges = (
+            (focus_meta["label"], focus_meta["color"]),
+            (status_meta["label"], status_meta["color"]),
+            (priority_meta["label"], priority_meta["color"]),
+            (task.get("category", "Другое"), "#A78BFA"),
         )
-        self.plan_heading.pack(anchor="w", pady=(0, 8))
-
-        self.plan_box = tk.Text(
-            self.outer, height=6, wrap="word", bg="#202632", fg="#e0e6ef",
-            insertbackground="#e0e6ef", relief="flat", borderwidth=0,
-            font=("Segoe UI", 11), padx=14, pady=12, spacing1=3, spacing3=7
-        )
-        self.plan_box.pack(fill="both", expand=True)
-        self.plan_box.configure(state="disabled")
-
-        self.action_frame = tk.Frame(self.outer, bg="#151820")
-        self.action_frame.pack(fill="x", pady=(12, 0))
-
-        self.primary_button = self._make_button(self.action_frame, "study_button", self.mark_study_started, primary=True)
-        self.primary_button.pack(fill="x", pady=2)
-        self.pause_button = self._make_button(self.action_frame, "pause_button", self.toggle_study_pause)
-        self.pause_button.pack(fill="x", pady=2)
-        self.check_button = self._make_button(self.action_frame, "check_button", self.check_study_time)
-        self.check_button.pack(fill="x", pady=2)
-        self.reset_timer_button = self._make_button(self.action_frame, "reset_timer_button", self.reset_study_timer)
-        self.reset_timer_button.pack(fill="x", pady=2)
-        self.settings_button = self._make_button(self.action_frame, "settings_button", self.open_settings)
-        self.settings_button.pack(fill="x", pady=(8, 2))
-        self.temporary_button = self._make_button(self.action_frame, "temporary_button", self.show_temporary_options)
-        self.temporary_button.pack(fill="x", pady=2)
-
-        self.temp_frame = tk.Frame(self.outer, bg="#151820")
-        self.temp_heading = tk.Label(
-            self.temp_frame, text="", bg="#151820", fg="#f2f4f8",
-            font=("Segoe UI", 13, "bold")
-        )
-        self.temp_heading.pack(anchor="w", pady=(0, 12))
-        self.temp_unlimited_button = self._make_button(self.temp_frame, "unlimited_button", self.grant_temporary_unlimited, primary=True)
-        self.temp_unlimited_button.pack(fill="x", pady=4)
-        self.temp_30_button = self._make_button(self.temp_frame, "thirty_minutes_button", self.grant_30_minutes)
-        self.temp_30_button.pack(fill="x", pady=4)
-        self.back_button = self._make_button(self.temp_frame, "back_button", self.show_main_options)
-        self.back_button.pack(fill="x", pady=(12, 4))
-
-        self.footer_label = tk.Label(
-            self.outer, text=self.t("footer_hint"), bg="#151820", fg="#788397",
-            font=("Segoe UI", 9), wraplength=570, justify="left"
-        )
-        self.footer_label.pack(anchor="w", pady=(10, 0))
+        for label, color in badges:
+            chip = ctk.CTkLabel(tags, text=label, text_color=color, fg_color="#222E43", corner_radius=8, font=ctk.CTkFont(size=9, weight="bold"), padx=7, pady=4)
+            chip.pack(side="left", padx=(0, 5))
+        duration = int(task.get("duration_minutes", 0))
+        if duration >= 60:
+            duration_text = f"{duration // 60} ч" + (f" {duration % 60} мин" if duration % 60 else "")
+        else:
+            duration_text = f"{duration} мин"
+        duration_row = ctk.CTkFrame(content, fg_color="transparent")
+        duration_row.pack(fill="x")
+        ctk.CTkLabel(duration_row, text=f"◷  {duration_text if duration else 'Без таймера'}", text_color="#9CA3AF", font=ctk.CTkFont(size=11)).pack(side="left")
 
     def open_settings(self) -> None:
-        if self.settings_window is not None:
+        if self._settings_window is not None:
             try:
-                if self.settings_window.window.winfo_exists():
-                    self.settings_window.window.lift()
+                if self._settings_window.window.winfo_exists():
+                    self._settings_window.window.lift()
                     return
             except Exception:
                 pass
         from src.ui.settings_window import SettingsWindow
-        self.settings_window = SettingsWindow(self.root, self.config, self._apply_settings)
+        self._settings_window = SettingsWindow(self.root, self.config, self._apply_settings)
 
     def _apply_settings(self, updated_config: dict[str, Any]) -> None:
+        previous_rules = self.config.get("rules", {})
+        previous_web = (bool(previous_rules.get("website_blocking_enabled", False)), tuple(previous_rules.get("blocked_websites", [])))
         self.config = updated_config
         self.ui_text = self.config["ui"]
         self.app_config = self.config["app"]
         self.root.title(self.t("window_title"))
-        self.root.geometry(
-            f'{int(self.app_config.get("window_width", 650))}x{int(self.app_config.get("window_height", 700))}'
-        )
-        self.root.attributes("-topmost", bool(self.app_config.get("always_on_top", True)))
-        button_texts = (
-            (self.primary_button, "study_button"),
-            (self.check_button, "check_button"),
-            (self.reset_timer_button, "reset_timer_button"),
-            (self.settings_button, "settings_button"),
-            (self.temporary_button, "temporary_button"),
-            (self.temp_unlimited_button, "unlimited_button"),
-            (self.temp_30_button, "thirty_minutes_button"),
-            (self.back_button, "back_button"),
-        )
-        for button, key in button_texts:
-            button.configure(text=self.t(key))
-        self.temp_heading.configure(text=self.t("temporary_heading"))
-        self.status_label.configure(text=self.t("status_message"))
+        self.root.attributes("-topmost", bool(self.app_config.get("always_on_top", False)))
+        self.root.geometry(f'{int(self.app_config.get("window_width", 1040))}x{int(self.app_config.get("window_height", 760))}')
+        current_rules = self.config.get("rules", {})
+        current_web = (bool(current_rules.get("website_blocking_enabled", False)), tuple(current_rules.get("blocked_websites", [])))
+        if previous_web != current_web:
+            try:
+                request_admin_sync()
+                messagebox.showinfo("Блокировка сайтов", "Запрошено применение правил сайтов. Подтверди запрос UAC Windows, если он появится.", parent=self.root)
+            except Exception as exc:
+                messagebox.showwarning("Блокировка сайтов", str(exc), parent=self.root)
+        self._sync_tray()
         self._refresh_ui()
         self._update_timer_display(schedule_next=False)
 
-    def _make_button(self, parent: Any, key: str, command: Any, primary: bool = False) -> Any:
-        tk = self.tk
-        bg = "#365d9b" if primary else "#2b3443"
-        active = "#426fb4" if primary else "#39465a"
-        button = tk.Button(
-            parent, text=self.t(key), command=command,
-            bg=bg, fg="#ffffff", activebackground=active, activeforeground="#ffffff",
-            relief="flat", borderwidth=0, cursor="hand2", anchor="center",
-            font=("Segoe UI", 11, "bold" if primary else "normal"), padx=12, pady=11
-        )
-        return button
-
-    def _schedule_for_today(self) -> tuple[str, list[str]]:
-        return schedule_for_today(self.config)
-
-    def _refresh_ui(self, extra_status: str | None = None) -> None:
-        day_name, tasks = self._schedule_for_today()
-        now = datetime.now()
-        self.heading_label.configure(text=self.t("heading"))
-        self.date_label.configure(text=self.t("date_line", date=now.strftime("%d.%m.%Y"), weekday=day_name))
-        self.plan_heading.configure(text=self.t("intro"))
-        self.plan_box.configure(state="normal")
-        self.plan_box.delete("1.0", "end")
-        if tasks:
-            for index, task in enumerate(tasks, start=1):
-                self.plan_box.insert("end", f"{index}. {task}\n\n")
-        else:
-            self.plan_box.insert("end", self.t("empty_schedule"))
-        self.plan_box.configure(state="disabled")
-
-        # This label is intentionally static: users edit it in Settings.
-        self.status_label.configure(text=self.t("status_message"))
-        if hasattr(self, "pause_button"):
-            is_running = self.study_running_since is not None and self.study_date == datetime.now().date().isoformat()
-            has_session = is_running or self.study_date == datetime.now().date().isoformat()
-            self.pause_button.configure(
-                text=self.t("pause_button") if is_running else self.t("resume_button"),
-                state="normal" if has_session else "disabled",
-            )
-        if hasattr(self, "reset_timer_button"):
-            reset_available = self.mode not in ("timed", "unlimited")
-            self.reset_timer_button.configure(state="normal" if reset_available else "disabled")
-        self.footer_label.configure(text=self.t("footer_hint"))
-
-    @staticmethod
-    def _format_seconds(seconds: int) -> str:
-        minutes, secs = divmod(max(0, seconds), 60)
-        return f"{minutes:02d}:{secs:02d}"
-
-    def show_temporary_options(self) -> None:
-        self.action_frame.pack_forget()
-        self.plan_heading.pack_forget()
-        self.plan_box.pack_forget()
-        self.temp_frame.pack(fill="x", pady=(28, 0))
-        self.temp_heading.configure(text=self.t("temporary_heading"))
-        self.temp_view_visible = True
-        self.root.deiconify()
-        self.root.lift()
-
-    def show_main_options(self) -> None:
-        self.temp_frame.pack_forget()
-        self.plan_heading.pack(before=self.footer_label, anchor="w", pady=(0, 8))
-        self.plan_box.pack(before=self.footer_label, fill="both", expand=True)
-        self.action_frame.pack(before=self.footer_label, fill="x", pady=(12, 0))
-        self.temp_view_visible = False
-        self._refresh_ui()
+    def _sync_tray(self) -> None:
+        if self.app_config.get("show_in_tray", True):
+            if self._tray is None:
+                self._tray = SystemTrayController(
+                    lambda: self.root.after(0, self._bring_to_front),
+                    lambda: self.root.after(0, self.toggle_study_pause),
+                    lambda: self.root.after(0, self._shutdown),
+                )
+            try:
+                self._tray.start()
+            except Exception as exc:
+                self._tray = None
+                messagebox.showwarning("Системный трей недоступен", f"Не удалось включить значок в трее: {exc}", parent=self.root)
+        elif self._tray is not None:
+            self._tray.stop()
+            self._tray = None
 
     def _bring_to_front(self) -> None:
         self.root.deiconify()
@@ -319,24 +536,34 @@ class SteamFocusGuard:
         except Exception:
             pass
 
-    def show_gate(self, extra_status: str | None = None) -> None:
-        self._gate_was_requested = True
-        self.show_main_options()
-        self._refresh_ui(extra_status)
-        self.gate_visible = True
-        self._bring_to_front()
+    def _hide_to_tray_or_minimise(self) -> None:
+        if self._tray is not None and self.app_config.get("show_in_tray", True):
+            self.root.withdraw()
+        else:
+            self.root.iconify()
+
+    def on_close(self) -> None:
+        if self._tray is not None and self.app_config.get("show_in_tray", True) and self.app_config.get("close_to_tray", True):
+            self.root.withdraw()
+            return
+        answer = messagebox.askyesno(self.t("exit_title"), self.t("exit_message"), parent=self.root)
+        if answer:
+            self._shutdown()
 
     def mark_study_started(self) -> None:
+        if self.mode == "unlimited":
+            return
+        if not self._today_tasks():
+            messagebox.showinfo("Список задач пуст", "Сначала добавь хотя бы одну задачу.", parent=self.root)
+            return
         today = datetime.now().date().isoformat()
         if self.study_date != today:
-            self.study_date = today
-            self.study_elapsed_seconds = 0
-            self.study_running_since = None
+            self.study_date, self.study_elapsed_seconds = today, 0
         if self.study_running_since is None:
             self.study_running_since = time.time()
         self.mode = "study"
         self._save_state()
-        log_event("study_started", "Учебная сессия запущена или продолжена")
+        log_event("focus_started", "Учебный фокус запущен или продолжен")
         self._refresh_ui()
         self._update_timer_display(schedule_next=False)
         self.root.iconify()
@@ -348,20 +575,16 @@ class SteamFocusGuard:
         if self.study_running_since is not None:
             self.study_elapsed_seconds = self._study_elapsed_seconds() or 0
             self.study_running_since = None
-            log_event("study_paused", "Учебный таймер поставлен на паузу")
+            log_event("focus_paused", "Учебный таймер приостановлен")
         else:
             self.study_running_since = time.time()
             self.mode = "study"
-            log_event("study_resumed", "Учебный таймер продолжен")
+            log_event("focus_resumed", "Учебный таймер продолжен")
         self._save_state()
         self._refresh_ui()
         self._update_timer_display(schedule_next=False)
 
-    def _required_study_minutes_for_today(self) -> int:
-        return required_study_minutes_for_today(self.config)
-
     def _study_elapsed_seconds(self) -> int | None:
-        """Return accumulated study time, excluding every paused interval."""
         if self.study_date != datetime.now().date().isoformat():
             return None
         elapsed = max(0, int(self.study_elapsed_seconds))
@@ -378,140 +601,71 @@ class SteamFocusGuard:
         minutes, secs = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        minutes = max(0, int(seconds)) // 60
+        return f"{minutes // 60} ч {minutes % 60} мин" if minutes >= 60 else f"{minutes} мин"
+
     def _update_timer_display(self, schedule_next: bool = True) -> None:
         if not self.running:
             return
-        required_seconds = self._required_study_minutes_for_today() * 60
-        if self.mode == "timed" and self._timer_end is not None:
-            remaining = max(0, int(self._timer_end - time.time()))
-            text = self.t("timer_game_display", remaining=self._format_clock(remaining))
+        if self.selected_date != datetime.now().date():
+            self.timer_label.configure(text="Таймер фокуса доступен только для текущего дня.")
+            if schedule_next:
+                self.root.after(1000, self._update_timer_display)
+            return
+        required = required_study_minutes_for_today(self.config) * 60
+        elapsed = self._study_elapsed_seconds()
+        if elapsed is None:
+            text = self.t("timer_not_started", required=self._format_clock(required))
+        elif self.study_running_since is None:
+            text = self.t("timer_paused_display", elapsed=self._format_clock(elapsed), required=self._format_clock(required))
         else:
-            elapsed = self._study_elapsed_seconds()
-            if elapsed is None:
-                text = self.t("timer_not_started", required=self._format_clock(required_seconds))
-            else:
-                remaining = max(0, required_seconds - elapsed)
-                if self.study_running_since is None:
-                    text = self.t(
-                        "timer_paused_display",
-                        elapsed=self._format_clock(elapsed),
-                        required=self._format_clock(required_seconds),
-                    )
-                else:
-                    text = self.t(
-                        "timer_study_display",
-                        elapsed=self._format_clock(elapsed),
-                        required=self._format_clock(required_seconds),
-                        remaining=self._format_clock(remaining),
-                    )
+            remaining = max(0, required - elapsed)
+            text = self.t("timer_study_display", elapsed=self._format_clock(elapsed), required=self._format_clock(required), remaining=self._format_clock(remaining))
         self.timer_label.configure(text=text)
+        if self.study_running_since is not None:
+            self.pause_button.configure(text=self.t("pause_button"), state="normal")
+        elif self.study_date == datetime.now().date().isoformat():
+            self.pause_button.configure(text=self.t("resume_button"), state="normal")
+        else:
+            self.pause_button.configure(text=self.t("pause_button"), state="disabled")
         if schedule_next:
             self.root.after(1000, self._update_timer_display)
 
     def reset_study_timer(self) -> None:
-        if self.mode in ("timed", "unlimited"):
+        if self.mode == "unlimited":
             return
-        confirmed = self.messagebox.askyesno(
-            self.t("reset_timer_title"),
-            self.t("reset_timer_message"),
-            parent=self.root,
-        )
-        if not confirmed:
+        if not messagebox.askyesno(self.t("reset_timer_title"), self.t("reset_timer_message"), parent=self.root):
             return
         self.study_date = None
         self.study_elapsed_seconds = 0
         self.study_running_since = None
-        if self.mode == "study":
-            self.mode = "blocked"
+        self.mode = "blocked"
         self._save_state()
-        log_event("study_timer_reset", "Учебный таймер сброшен пользователем")
-        self._refresh_ui()
+        log_event("focus_reset", "Таймер фокуса сброшен")
         self._update_timer_display(schedule_next=False)
 
-    @staticmethod
-    def _format_duration(seconds: int) -> str:
-        total_minutes = max(0, (int(seconds) + 59) // 60)
-        hours, minutes = divmod(total_minutes, 60)
-        if hours:
-            return f"{hours} ч. {minutes} мин." if minutes else f"{hours} ч."
-        return f"{minutes} мин."
-
     def check_study_time(self) -> None:
-        """Check the configured study target and grant unlimited Steam access when reached."""
-        required = self._required_study_minutes_for_today()
-        elapsed_seconds = self._study_elapsed_seconds()
-
-        if elapsed_seconds is None and required > 0:
-            self.messagebox.showinfo(
-                self.t("check_no_session_title"),
-                self.t("check_no_session_message", required=self._format_duration(required * 60)),
-                parent=self.root,
-            )
-            log_event("study_check_without_session", f"Дневная норма: {required} мин.")
+        required = required_study_minutes_for_today(self.config) * 60
+        tasks = self._today_tasks()
+        if not tasks or required <= 0:
+            messagebox.showinfo(self.t("check_no_tasks_title"), self.t("check_no_tasks_message"), parent=self.root)
             return
-
-        elapsed_seconds = elapsed_seconds or 0
-        required_seconds = required * 60
-        remaining_seconds = max(0, required_seconds - elapsed_seconds)
-        if remaining_seconds > 0:
-            elapsed_text = self._format_duration(elapsed_seconds)
-            required_text = self._format_duration(required_seconds)
-            remaining_text = self._format_duration(remaining_seconds)
-            message = self.t(
-                "check_remaining_message",
-                elapsed=elapsed_text,
-                required=required_text,
-                remaining=remaining_text,
-            )
-            self.messagebox.showinfo(
-                self.t("check_remaining_title"),
-                message,
-                parent=self.root,
-            )
-            log_event(
-                "study_check_remaining",
-                f"Прошло {elapsed_text}; осталось {remaining_text}; норма {required_text}",
-            )
+        elapsed = self._study_elapsed_seconds()
+        if elapsed is None:
+            messagebox.showinfo(self.t("check_no_session_title"), self.t("check_no_session_message", required=self._format_duration(required)), parent=self.root)
             return
-
-        elapsed_text = self._format_duration(elapsed_seconds)
-        required_text = self._format_duration(required_seconds)
-        self.messagebox.showinfo(
-            self.t("check_complete_title"),
-            self.t(
-                "check_complete_message",
-                elapsed=elapsed_text,
-                required=required_text,
-            ),
-            parent=self.root,
-        )
-        log_event("study_requirement_met", f"Засчитано {elapsed_text}; норма {required_text}")
-        self._grant_unlimited()
-
-    def grant_temporary_unlimited(self) -> None:
-        log_event("temporary_unlimited", "Выдан неограниченный временный доступ")
-        self._grant_unlimited()
-
-    def _grant_unlimited(self) -> None:
+        remaining = max(0, required - elapsed)
+        if remaining:
+            messagebox.showinfo(self.t("check_remaining_title"), self.t("check_remaining_message", elapsed=self._format_duration(elapsed), remaining=self._format_duration(remaining)), parent=self.root)
+            log_event("focus_check_incomplete", f"Осталось {self._format_duration(remaining)}")
+            return
+        messagebox.showinfo(self.t("check_complete_title"), self.t("check_complete_message"), parent=self.root)
         self.mode = "unlimited"
-        self._timer_end = None
-        self._permission_granted_at = time.monotonic()
-        self._steam_seen_in_session = False
+        self._steam_seen = False
         self._steam_missing_since = None
         self._save_state()
-        self._launch_steam_or_notify()
-        self.root.iconify()
-
-    def grant_30_minutes(self) -> None:
-        self.mode = "timed"
-        self._timer_end = time.time() + 30 * 60
-        self._warned_5 = False
-        self._warned_1 = False
-        self._permission_granted_at = time.monotonic()
-        self._steam_seen_in_session = False
-        self._steam_missing_since = None
-        self._save_state()
-        log_event("temporary_30m_started", "Выдан доступ на 30 минут")
         self._launch_steam_or_notify()
         self.root.iconify()
 
@@ -520,129 +674,43 @@ class SteamFocusGuard:
             return
         executable = get_steam_executable(self.config, self.detected_steam_path)
         if executable is None:
-            self.show_notification(self.t("steam_not_found_message"), duration_ms=9000)
+            messagebox.showwarning("Steam не найден", "Укажи путь к steam.exe в настройках.", parent=self.root)
             return
         try:
-            flags = 0
-            if os.name == "nt":
-                flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0) if os.name == "nt" else 0
             subprocess.Popen([str(executable)], cwd=str(executable.parent), creationflags=flags)
-            self.detected_steam_path = str(executable)
         except Exception as exc:
-            self.show_notification(f"{self.t('steam_not_found_message')}\n{exc}", duration_ms=10000)
+            messagebox.showerror("Не удалось запустить Steam", str(exc), parent=self.root)
 
-    def show_notification(self, message: str, duration_ms: int = 6500) -> None:
-        tk = self.tk
-        if self.notification_window is not None:
-            try:
-                self.notification_window.destroy()
-            except Exception:
-                pass
-        window = tk.Toplevel(self.root)
-        self.notification_window = window
-        window.title(self.t("notification_title"))
-        window.configure(bg="#222936")
-        window.resizable(False, False)
-        window.attributes("-topmost", True)
-        label = tk.Label(
-            window, text=message, bg="#222936", fg="#ffffff",
-            font=("Segoe UI", 11), padx=18, pady=16,
-            wraplength=420, justify="left"
-        )
-        label.pack(fill="both", expand=True)
-        window.update_idletasks()
-        x = max(0, self.root.winfo_screenwidth() - window.winfo_width() - 40)
-        y = max(0, self.root.winfo_screenheight() - window.winfo_height() - 80)
-        window.geometry(f"+{x}+{y}")
-        window.after(duration_ms, lambda: self._close_notification(window))
-        try:
-            import winsound
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-        except Exception:
-            pass
-
-    def _close_notification(self, window: Any) -> None:
-        try:
-            window.destroy()
-        except Exception:
-            pass
-        if self.notification_window is window:
-            self.notification_window = None
-
-    def _find_steam_processes(self) -> list[Any]:
+    def _find_processes(self, names: set[str]) -> list[Any]:
         if psutil is None:
             return []
-        names = {str(name).lower() for name in self.app_config.get("steam_process_names", ["steam.exe"])}
         found = []
         for process in psutil.process_iter(attrs=["pid", "name", "exe"]):
             try:
-                name = (process.info.get("name") or "").lower()
-                if name in names:
+                if (process.info.get("name") or "").casefold() in names:
                     found.append(process)
-                    exe = process.info.get("exe")
-                    if exe:
-                        self.detected_steam_path = exe
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
         return found
 
-    def _terminate_steam_processes(self, processes: list[Any]) -> None:
+    def _terminate_processes(self, processes: list[Any]) -> None:
         if psutil is None:
             return
-        to_stop: dict[int, Any] = {}
-        for process in processes:
-            try:
-                for child in process.children(recursive=True):
-                    to_stop[child.pid] = child
-                to_stop[process.pid] = process
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-        targets = list(to_stop.values())
+        unique = {process.pid: process for process in processes}
+        targets = list(unique.values())
         for process in targets:
             try:
                 process.terminate()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-        _, alive = psutil.wait_procs(targets, timeout=0.8)
+        _, alive = psutil.wait_procs(targets, timeout=0.5)
         for process in alive:
             try:
                 process.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
 
-    def _expire_timer(self) -> None:
-        processes = self._find_steam_processes()
-        if processes:
-            self._terminate_steam_processes(processes)
-        self.mode = "blocked"
-        self._timer_end = None
-        self.study_date = None
-        self.study_elapsed_seconds = 0
-        self.study_running_since = None
-        self._save_state()
-        log_event("time_expired", "Лимит 30 минут истёк; Steam закрыт")
-        self.show_gate(self.t("time_finished_message"))
-        self.show_notification(self.t("time_finished_message"), duration_ms=8000)
-
-    def _check_timer(self) -> None:
-        if self.mode != "timed" or self._timer_end is None:
-            return
-        remaining = int(self._timer_end - time.time())
-        elapsed = 1800 - remaining
-        if remaining <= 0:
-            self._expire_timer()
-            return
-        if 1500 <= elapsed < 1740 and not self._warned_5:
-            self._warned_5 = True
-            log_event("warning_5m", "Осталось 5 минут")
-            self.show_notification(self.t("time_warning_5"))
-        if elapsed >= 1740 and not self._warned_1:
-            self._warned_1 = True
-            log_event("warning_1m", "Осталась 1 минута")
-            self.show_notification(self.t("time_warning_1"))
-        remaining_text = self.t("status_timed", time_left=self._format_seconds(remaining))
-        # The status message below the timer is user-editable and remains unchanged.
-        
     def _monitor_processes(self) -> None:
         if not self.running:
             return
@@ -653,62 +721,46 @@ class SteamFocusGuard:
                 pass
             self._shutdown()
             return
-
-        self._check_timer()
-        processes = self._find_steam_processes()
-        is_running = bool(processes)
-
-        if self.mode in ("blocked", "study"):
-            if is_running:
-                for process in processes:
-                    try:
-                        log_event("steam_blocked", f"Попытка запуска: PID {process.pid}")
-                    except Exception:
-                        pass
-                self._terminate_steam_processes(processes)
-                if not self.gate_visible or self.root.state() == "iconic":
-                    self.show_gate()
-                elif self.root.state() == "withdrawn":
-                    self.show_gate()
-        elif self.mode == "timed":
-            if is_running:
-                self._steam_seen_in_session = True
-                self._steam_missing_since = None
-        elif self.mode == "unlimited":
-            if is_running:
-                self._steam_seen_in_session = True
-                self._steam_missing_since = None
-            elif self._steam_seen_in_session:
-                if self._steam_missing_since is None:
-                    self._steam_missing_since = time.monotonic()
-                elif time.monotonic() - self._steam_missing_since >= float(self.app_config.get("close_grace_seconds", 8)):
-                    self.mode = "blocked"
-                    self._timer_end = None
-                    self.study_date = None
-                    self.study_elapsed_seconds = 0
-                    self.study_running_since = None
-                    self._steam_seen_in_session = False
+        if psutil is not None:
+            app_rules = {str(name).casefold() for name in self.config.get("rules", {}).get("blocked_apps", [])}
+            steam_names = {str(name).casefold() for name in self.app_config.get("steam_process_names", ["steam.exe"])}
+            app_rules -= steam_names
+            # User-selected distracting applications are blocked only during focus,
+            # not after the daily plan has been completed and access is granted.
+            if self.mode in ("blocked", "study") and app_rules:
+                blocked = self._find_processes(app_rules)
+                if blocked:
+                    self._terminate_processes(blocked)
+                    log_event("application_blocked", "Завершён процесс из списка ограничений")
+            steam = self._find_processes(steam_names)
+            if self.mode in ("blocked", "study") and steam:
+                self._terminate_processes(steam)
+                self.root.after(0, self._bring_to_front)
+                log_event("steam_blocked", "Попытка запуска Steam во время фокуса")
+            elif self.mode == "unlimited":
+                if steam:
+                    self._steam_seen = True
                     self._steam_missing_since = None
-                    self._save_state()
-                    log_event("steam_session_closed", "Steam закрыт; неограниченный доступ отозван")
-                    self._refresh_ui()
-
-        interval = max(100, int(self.app_config.get("scan_interval_ms", 250)))
+                elif self._steam_seen:
+                    if self._steam_missing_since is None:
+                        self._steam_missing_since = time.monotonic()
+                    elif time.monotonic() - self._steam_missing_since >= float(self.app_config.get("close_grace_seconds", 8)):
+                        self.mode = "blocked"
+                        self._steam_seen = False
+                        self._steam_missing_since = None
+                        self._save_state()
+                        log_event("steam_session_closed", "Steam закрыт; доступ снова ограничен")
+        interval = max(200, min(10000, int(self.app_config.get("scan_interval_ms", 400))))
         self.root.after(interval, self._monitor_processes)
 
-    def _schedule_monitor(self) -> None:
-        self.root.after(300, self._monitor_processes)
-
-    def request_exit(self) -> None:
-        answer = self.messagebox.askyesno(
-            self.t("exit_title"), self.t("exit_message"), parent=self.root
-        )
-        if answer:
-            self._shutdown()
-
     def _shutdown(self) -> None:
+        if not self.running:
+            return
         self.running = False
-        log_event("guard_stopped", "Защитник остановлен")
+        if self._tray is not None:
+            self._tray.stop()
+            self._tray = None
+        log_event("application_closed", "Focus Guard закрыт пользователем")
         try:
             self.root.destroy()
         except Exception:
